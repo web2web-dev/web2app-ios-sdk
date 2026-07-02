@@ -1,47 +1,115 @@
-# web2app iOS SDK (скелет) — WEB-434
+# web2app iOS SDK
 
-Тонкий iOS-SDK для P10-моста web→app. **IP наш, MIT.** Модель B+C (тонкая обвязка над
-нашим backend, не полный native руками).
+Тонкий SDK, который связывает вашу веб-воронку с мобильным приложением: пользователь
+проходит воронку в вебе, устанавливает приложение — и приложение узнаёт, **кто это** и
+**что он оплатил**, чтобы сразу открыть платный контент. Матчинг «воронка → установка»
+делается на нашей стороне, вам не нужно писать его логику.
 
-> ⚠ **Статус: СКЕЛЕТ до POC-1.** MMP-ветка (`deep_link_value` из callback) ship-blocked
-> до POC-1 (реальный девайс + TestFlight + живой OneLink подтверждают доставку
-> `deep_link_value`; adjust/ios_sdk#752, iOS17/18). Остальное (R1-passthrough,
-> APP_INSTALLED, guid-persist, token/email-resolve) реализовано по контрактам backend.
+- Язык: Swift · Платформа: iOS 14+ · Лицензия: MIT
+- Установка: Swift Package Manager
+
+---
 
 ## Установка (Swift Package Manager)
-Xcode → **File → Add Package Dependencies** → URL:
+
+В Xcode: **File → Add Package Dependencies…** и вставьте URL:
+
 ```
 https://github.com/web2web-dev/web2app-ios-sdk.git
 ```
-Версия: `0.1.0` (Up to Next Major). Продукт: `Web2AppSDK`.
 
-## API (4 точки, Web2Wave-стиль)
+Правило версии — **Up to Next Major**, начиная с `0.1.0`. Подключаемый продукт — `Web2AppSDK`.
+
+---
+
+## Быстрый старт
+
+Три шага. Больше для базовой интеграции ничего не нужно.
+
 ```swift
-Web2App.configure(projectId: "proj_…", baseUrl: URL(string: "https://api.…")!)
+import Web2AppSDK
 
-// первый запуск: передать deep_link_value из СВОЕГО MMP-callback (POC-1) или nil
-Web2App.identify(deepLinkValue: afDeepLinkValue) { result in … }   // → guid
-// промах атрибуции → .needsEmailFallback → покажи экран email:
-Web2App.requestEmailRecovery(email) { _ in }   // сервер шлёт magic-link (204)
+// 1. Инициализация — один раз при старте приложения.
+Web2App.configure(
+    projectId: "ВАШ_PROJECT_ID",                          // берётся в кабинете проекта
+    baseUrl: URL(string: "https://api.testfunnelsdev.click")!
+)
 
-// в любой момент:
-Web2App.entitlement { grant in if grant?.isActive == true { unlock() } }  // R1 passthrough
+// 2. Идентификация пользователя при первом запуске.
+//    deepLinkValue — значение, которое отдаёт ваш MMP-SDK (AppsFlyer / Adjust)
+//    из отложенного диплинка. Если атрибуции нет — сработает восстановление по email.
+Web2App.identify(deepLinkValue: attributionValue) { result in
+    switch result {
+    case .success(let guid):
+        print("пользователь опознан: \(guid)")
+    case .failure(.needsEmailFallback):
+        // покажите экран «введите email» и вызовите requestEmailRecovery(...)
+        break
+    case .failure(let error):
+        print("ошибка: \(error)")
+    }
+}
+
+// 3. Проверка доступа — в любой момент, чтобы открыть/закрыть платный контент.
+Web2App.entitlement { grant in
+    if grant?.isActive == true {
+        // разблокировать доступ
+    }
+}
 ```
 
-## Принципы (WEB-428)
-- `guid` = client-held ключ (Keychain), отдаём вам; `email` = recovery (verified).
-- **Свой fingerprint НЕ строим** — на iOS портрет снимает MMP-SDK интегратора, не мы.
-- Carrier = opaque token; `entitlement()` дословно проксирует наш R1 (не тронут).
+### Где взять Project ID
 
-## Backend-контракты (сверены с кодом)
-| Точка | Метод |
+В веб-кабинете: **проект → Настройки → «Подключение приложения» → «Полный мост»** —
+там показан ваш Project ID (можно скопировать) и готовые сниппеты.
+
+---
+
+## API
+
+| Метод | Назначение |
 |---|---|
-| Entitlement (R1) | `GET /public/entitlement?guid=` → `{grants:[…]}` |
-| App-installed | `POST /public/handoff/app-callback` → 204 |
-| Token→guid | `GET /public/handoff/resolve?code=` → `{guid}` |
-| Email-recovery | `POST /public/handoff/email-recovery/request` → 204 (magic-link) |
+| `Web2App.configure(projectId:baseUrl:)` | Инициализация SDK. Вызвать один раз при старте. |
+| `Web2App.identify(deepLinkValue:completion:)` | Опознать пользователя при первом запуске. Возвращает `guid` или сигнал «нужен email». |
+| `Web2App.requestEmailRecovery(_:completion:)` | Запросить восстановление по email — мы отправим пользователю ссылку-магнит. |
+| `Web2App.entitlement(completion:)` | Получить текущий доступ пользователя (`grant.isActive`, `level`, `status`, `expiresAt`). |
+| `Web2App.currentGuid()` | Текущий идентификатор пользователя (если уже опознан). |
 
-Privacy: `PrivacyInfo.xcprivacy` (App Functionality, НЕ Tracking) — в бандле.
+Восстановление по email — два шага: `requestEmailRecovery(email)` отправляет пользователю
+письмо со ссылкой; когда он по ней перейдёт, ваше приложение получит код из диплинка и
+передаёт его снова в `identify(deepLinkValue: code)`.
+
+---
+
+## Как это работает
+
+1. Пользователь проходит вашу веб-воронку — мы знаем, кто он и что оплатил.
+2. Он переходит в App Store и ставит приложение. Идентификатор доезжает через отложенный
+   диплинк вашего MMP (AppsFlyer / Adjust).
+3. SDK при первом запуске опознаёт пользователя через наш сервер и связывает установку с
+   вашим проектом.
+4. `entitlement()` возвращает актуальный доступ — вы открываете платный контент.
+
+---
+
+## Приватность
+
+- Идентификатор пользователя (`guid`) хранится в Keychain, никакой рекламный трекинг SDK
+  сам не ведёт.
+- В комплекте — privacy-манифест `PrivacyInfo.xcprivacy` (категория App Functionality).
+
+## Требования к атрибуции (iOS)
+
+Для сопоставления «воронка → установка» на iOS нужен ваш MMP-SDK (AppsFlyer или Adjust),
+который передаёт значение отложенного диплинка в `identify(deepLinkValue:)`. Это ранняя
+версия (`0.1.0`) — по интеграции атрибуции лучше согласоваться с нами.
+
+---
 
 ## Android
-Отдельный репо: https://github.com/web2web-dev/web2app-android-sdk
+
+Отдельный пакет: https://github.com/web2web-dev/web2app-android-sdk
+
+## Лицензия
+
+MIT.
