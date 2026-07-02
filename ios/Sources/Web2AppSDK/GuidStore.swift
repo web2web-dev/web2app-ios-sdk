@@ -25,14 +25,22 @@ struct GuidStore {
     }
 
     func save(_ guid: String) {
-        let base: [String: Any] = [
+        SecItemDelete(baseQuery as CFDictionary) // upsert: удалить старое, вставить новое
+        var attrs = baseQuery
+        attrs[kSecValueData as String] = Data(guid.utf8)
+        SecItemAdd(attrs as CFDictionary, nil)
+    }
+
+    /// Удаляет сохранённый guid (используется DEBUG-сбросом).
+    func clear() {
+        SecItemDelete(baseQuery as CFDictionary)
+    }
+
+    private var baseQuery: [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(base as CFDictionary) // upsert: удалить старое, вставить новое
-        var attrs = base
-        attrs[kSecValueData as String] = Data(guid.utf8)
-        SecItemAdd(attrs as CFDictionary, nil)
     }
 }

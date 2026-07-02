@@ -85,6 +85,15 @@ public enum Web2App {
 
     /// Текущий guid (если резолвлен). Client-held ключ — можно отдать хосту.
     public static func currentGuid() -> String? { guidStore.load() }
+
+    #if DEBUG
+    /// DEBUG-only: инъекция guid для локального/симулятор-теста (реальной атрибуции на
+    /// эмуляторе нет). В release-сборке компилируется ВОН — в проде недоступно.
+    public static func debugSetGuid(_ guid: String) { guidStore.save(guid) }
+
+    /// DEBUG-only: сброс сохранённого guid (для повторного прогона).
+    public static func debugClear() { guidStore.clear() }
+    #endif
 }
 
 /// Конфиг SDK.
