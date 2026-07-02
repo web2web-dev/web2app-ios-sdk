@@ -11,7 +11,12 @@ let package = Package(
         .library(name: "Web2AppSDK", targets: ["Web2AppSDK"])
     ],
     targets: [
-        .target(name: "Web2AppSDK", path: "Sources/Web2AppSDK"),
+        .target(
+            name: "Web2AppSDK",
+            path: "Sources/Web2AppSDK",
+            // Privacy-манифест обязан попадать в бандл (App Store требование).
+            resources: [.copy("PrivacyInfo.xcprivacy")]
+        ),
         .testTarget(
             name: "Web2AppSDKTests",
             dependencies: ["Web2AppSDK"],
