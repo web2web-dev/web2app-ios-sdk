@@ -26,6 +26,9 @@ internal class GuidStore(val context: Context) {
 
     fun save(guid: String) = prefs.edit().putString(KEY_GUID, guid).apply()
 
+    /** Удаляет сохранённый guid (DEBUG-сброс). */
+    fun clear() = prefs.edit().remove(KEY_GUID).apply()
+
     private companion object {
         const val KEY_GUID = "guid"
     }

@@ -90,6 +90,19 @@ object Web2AppSdk {
     /** Текущий guid (client-held ключ). */
     fun currentGuid(): String? =
         if (::guidStore.isInitialized) guidStore.load() else null
+
+    /**
+     * DEBUG-only (для симулятор/эмулятор/девайс-теста без реальной атрибуции): инъекция guid.
+     * ⚠ Вызывать ТОЛЬКО под `if (BuildConfig.DEBUG)` — в проде не использовать.
+     */
+    fun debugSetGuid(guid: String) {
+        if (::guidStore.isInitialized) guidStore.save(guid)
+    }
+
+    /** DEBUG-only: сброс сохранённого guid. */
+    fun debugClear() {
+        if (::guidStore.isInitialized) guidStore.clear()
+    }
 }
 
 /** Конфиг SDK. */
