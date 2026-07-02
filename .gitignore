@@ -1,0 +1,12 @@
+# Build artifacts
+build/
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+.gradle/
+local.properties
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
