@@ -17,15 +17,19 @@ internal class AttributionResolver(private val config: Web2AppConfig) {
         }
     }
 
-    fun resolveEmail(email: String, onResult: (Result<String>) -> Unit) {
+    /**
+     * email-recovery запрос (шаг 1): POST /public/handoff/email-recovery/request {projectId,email} → 204.
+     * Сервер шлёт magic-link; guid придёт на шаге 2, когда юзер откроет ссылку (code) → resolveToken.
+     * Контракт подтверждён: public-handoff.controller. Возвращает успех отправки, НЕ guid.
+     */
+    fun requestEmailRecovery(email: String, onResult: (Result<Unit>) -> Unit) {
         Http.io {
             val body = JSONObject()
                 .put("projectId", config.projectId)
                 .put("email", email)
                 .toString()
-            // ⚠ WEB-431 (email-ядро, In Review): точный путь recovery request/verify финализируется.
-            val resp = Http.postJson("${config.baseUrl}/public/handoff/email-recovery/verify", body)
-            onResult(parseGuid(resp))
+            val ok = Http.postOk("${config.baseUrl}/public/handoff/email-recovery/request", body)
+            onResult(if (ok) Result.success(Unit) else Result.failure(IllegalStateException("email-recovery request failed")))
         }
     }
 

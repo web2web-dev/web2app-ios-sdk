@@ -52,16 +52,15 @@ object Web2AppSdk {
         }
     }
 
-    /** email-fallback: интегратор собрал email → verified-resolve (WEB-431) → guid. */
-    fun resolveEmail(email: String, onResult: (Result<String>) -> Unit) {
+    /**
+     * email-fallback (WEB-431, ДВА шага — асинхронно):
+     *  (1) requestEmailRecovery → сервер шлёт magic-link на email (204). guid тут НЕ приходит.
+     *  (2) юзер открывает ссылку из письма → приложение получает code из deeplink →
+     *      identifyWithDeepLinkValue(code) резолвит guid (тот же resolve-путь).
+     */
+    fun requestEmailRecovery(email: String, onResult: (Result<Unit>) -> Unit) {
         val cfg = config ?: return onResult(Result.failure(IllegalStateException("not configured")))
-        AttributionResolver(cfg).resolveEmail(email) { result ->
-            result.onSuccess { guid ->
-                guidStore.save(guid)
-                AppCallbackProducer(cfg).reportAppInstalled(guid)
-            }
-            onResult(result)
-        }
+        AttributionResolver(cfg).requestEmailRecovery(email, onResult)
     }
 
     /**

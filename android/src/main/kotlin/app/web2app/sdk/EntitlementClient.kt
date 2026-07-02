@@ -49,6 +49,23 @@ internal object Http {
 
     fun postJson(url: String, json: String): String? = request(url, "POST", json)
 
+    /** POST для эндпоинтов без тела ответа (напр. 204). true = 2xx. */
+    fun postOk(url: String, json: String): Boolean = try {
+        (URL(url).openConnection() as HttpURLConnection).run {
+            requestMethod = "POST"
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            outputStream.use { it.write(json.toByteArray()) }
+            val ok = responseCode in 200..299
+            disconnect()
+            ok
+        }
+    } catch (_: Exception) {
+        false
+    }
+
     private fun request(url: String, method: String, json: String?): String? = try {
         (URL(url).openConnection() as HttpURLConnection).run {
             requestMethod = method

@@ -35,16 +35,26 @@ struct AttributionResolver {
         Self.fetchGuid(url: url, method: "GET", body: nil, completion: completion)
     }
 
-    /// email-fallback → verified-resolve → guid.
-    /// ⚠ Зависит от WEB-431 (email-ядро, In Review): точный контракт recovery request/verify
-    /// финализируется при мёрдже 431. Здесь — целевая форма (POST verify → { guid }).
-    func resolveEmail(_ email: String, completion: @escaping (Result<String, Web2AppError>) -> Void) {
-        let url = config.baseUrl.appendingPathComponent("public/handoff/email-recovery/verify")
-        let body = try? JSONSerialization.data(withJSONObject: [
+    /// email-recovery запрос (шаг 1): `POST /public/handoff/email-recovery/request`
+    /// {projectId, email} → 204. Сервер шлёт magic-link; guid придёт на шаге 2, когда юзер
+    /// откроет ссылку (code) → resolveToken. Контракт подтверждён: public-handoff.controller.
+    func requestEmailRecovery(
+        _ email: String,
+        completion: @escaping (Result<Void, Web2AppError>) -> Void
+    ) {
+        let url = config.baseUrl.appendingPathComponent("public/handoff/email-recovery/request")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
             "projectId": config.projectId,
             "email": email,
         ])
-        Self.fetchGuid(url: url, method: "POST", body: body, completion: completion)
+        URLSession.shared.dataTask(with: req) { _, resp, err in
+            if let err { return completion(.failure(.network(err.localizedDescription))) }
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            completion((200..<300).contains(code) ? .success(()) : .failure(.resolveFailed))
+        }.resume()
     }
 
     private struct GuidResponse: Decodable { let guid: String }

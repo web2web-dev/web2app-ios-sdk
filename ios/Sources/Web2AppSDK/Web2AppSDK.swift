@@ -58,19 +58,17 @@ public enum Web2App {
         }
     }
 
-    /// email-fallback: интегратор собрал email на своём экране → verified-resolve (WEB-431) → guid.
-    public static func resolveEmail(
+    /// email-fallback (WEB-431, ДВА шага — асинхронно):
+    ///  (1) `requestEmailRecovery` → сервер шлёт magic-link на email (204). guid тут НЕ приходит.
+    ///  (2) юзер открывает ссылку из письма → приложение получает `code` из deeplink →
+    ///      `Web2App.identify(deepLinkValue: code)` резолвит guid (тот же resolve-путь).
+    /// Контракт `POST /public/handoff/email-recovery/request` подтверждён в коде бэка.
+    public static func requestEmailRecovery(
         _ email: String,
-        completion: @escaping (Result<String, Web2AppError>) -> Void
+        completion: @escaping (Result<Void, Web2AppError>) -> Void
     ) {
         guard let config else { return completion(.failure(.notConfigured)) }
-        AttributionResolver(config: config).resolveEmail(email) { result in
-            if case .success(let guid) = result {
-                guidStore.save(guid)
-                AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
-            }
-            completion(result)
-        }
+        AttributionResolver(config: config).requestEmailRecovery(email, completion: completion)
     }
 
     // MARK: entitlement (R1 passthrough)

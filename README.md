@@ -41,8 +41,9 @@ Talking-points для App Review — в поставке (см. `ios/PrivacyInfo
 |---|---|---|
 | Entitlement (R1) | `GET /public/entitlement?guid=<guid>` | `{ guid, grants: [{ level, status, expires_at, price_id }] }` |
 | App-installed | `POST /public/handoff/app-callback` | `{ guid, projectId, device, event: "app_installed" }` → 204 |
-| Token→guid | `GET /public/handoff/resolve?code=<token>` | `{ guid }` |
-| Email-recovery | (WEB-431, In Review) | request → verify → guid |
+| Token→guid | `GET /public/handoff/resolve?code=<token>` | `{ guid, projectId }` (verified) |
+| Email-recovery (шаг 1) | `POST /public/handoff/email-recovery/request` `{projectId,email}` | 204 (шлёт magic-link; guid НЕ здесь) |
+| Email→guid (шаг 2) | юзер открыл magic-link → `code` → `GET /public/handoff/resolve?code=` | `{ guid }` (тот же resolve) |
 
 ## Структура
 
