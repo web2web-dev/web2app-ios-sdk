@@ -84,6 +84,51 @@ public enum Web2App {
     /// Текущий guid (если резолвлен). Client-held ключ — можно отдать хосту.
     public static func currentGuid() -> String? { guidStore.load() }
 
+    // MARK: openWebPaywall (WEB-525 R2 — обратный флоу app→web-paywall)
+
+    /// Показывает веб-пейвол органик-пользователю (пришёл в прилку НЕ через воронку) и
+    /// возвращает право доступа после оплаты. Возврат-механика = **guid-поллинг** (ратиф.
+    /// PM 2026-07-07): SDK кейит checkout на СВОЙ guid, после закрытия браузера поллит
+    /// `entitlement()` по нему — БЕЗ resolve-by-email (тот S2S-HMAC, мобильному недоступен).
+    ///
+    /// `paywallURL` — URL опубликованного веб-пейвола (на кастом-домене клиента; наши
+    /// apex/поддомены пейволы не отдают — WEB-395). `email` — опц. prefill из аккаунта
+    /// прилки (юзер может поправить на вебе). `completion` — активный `EntitlementGrant`
+    /// или `nil`, если за окно поллинга право не появилось (юзер закрыл/не оплатил).
+    ///
+    /// ⚠ MVP-1: сигнатура принимает готовый `paywallURL`. Серверный резолв
+    /// `projectId → дефолт-пейвол-URL` (Adapty-плейсменты) — отдельный follow-up.
+    public static func openWebPaywall(
+        paywallURL: URL,
+        email: String? = nil,
+        completion: @escaping (EntitlementGrant?) -> Void
+    ) {
+        guard let config else { return completion(nil) }
+
+        // guid-поллинг: берём client-held guid или чеканим новый (как web-visitorId),
+        // персистим — grant на вебе ляжет на него, по нему же поллим entitlement.
+        let guid = guidStore.load() ?? UUID().uuidString
+        guidStore.save(guid)
+        let url = WebPaywallLauncher.appOriginURL(paywallURL: paywallURL, email: email, guid: guid)
+
+        #if canImport(UIKit) && canImport(SafariServices)
+        let client = EntitlementClient(config: config)
+        WebPaywallPresenter.present(url: url) {
+            // Браузер закрыт → поллим право по нашему guid (Adapty getProfile-стиль):
+            // 30 попыток × 2с ≈ 60с окна, покрывает Stripe webhook→grant задержку.
+            WebPaywallLauncher.pollForActiveGrant(
+                interval: 2.0,
+                maxAttempts: 30,
+                fetch: { cb in client.fetch(guid: guid, completion: cb) },
+                completion: completion
+            )
+        }
+        #else
+        // Не-UIKit платформа (напр. macOS юнит-тесты): презентации нет — no-op.
+        completion(nil)
+        #endif
+    }
+
     #if DEBUG
     /// DEBUG-only: инъекция guid для локального/симулятор-теста (реальной атрибуции на
     /// эмуляторе нет). В release-сборке компилируется ВОН — в проде недоступно.

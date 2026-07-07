@@ -26,4 +26,82 @@ final class Web2AppSDKTests: XCTestCase {
         let grant = try JSONDecoder().decode(EntitlementGrant.self, from: json)
         XCTAssertFalse(grant.isActive)
     }
+
+    // MARK: WEB-525 под-атом B — openWebPaywall (app-origin URL + guid-поллинг возврат)
+
+    /// app-origin URL несёт origin=app + email + guid (prefill + guid-поллинг).
+    func testAppOriginURLIncludesOriginEmailGuid() {
+        let base = URL(string: "https://client.example.com/paywall/pw1")!
+        let url = WebPaywallLauncher.appOriginURL(
+            paywallURL: base, email: "user@app.example", guid: "g-123"
+        )
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        let items = Dictionary(
+            (comps.queryItems ?? []).map { ($0.name, $0.value) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        XCTAssertEqual(items["origin"], "app")
+        XCTAssertEqual(items["email"], "user@app.example")
+        XCTAssertEqual(items["guid"], "g-123")
+        XCTAssertEqual(comps.path, "/paywall/pw1")
+    }
+
+    /// email опускается когда nil; существующий query пейвола сохраняется; guid всегда есть.
+    func testAppOriginURLOmitsEmailWhenNilAndPreservesQuery() {
+        let base = URL(string: "https://client.example.com/paywall/pw1?utm=x")!
+        let url = WebPaywallLauncher.appOriginURL(paywallURL: base, email: nil, guid: "g-9")
+        let items = Dictionary(
+            (URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems ?? [])
+                .map { ($0.name, $0.value) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        XCTAssertNil(items["email"])
+        XCTAssertEqual(items["origin"], "app")
+        XCTAssertEqual(items["guid"], "g-9")
+        XCTAssertEqual(items["utm"], "x") // не затёрли
+    }
+
+    /// поллинг останавливается и отдаёт грант, как только он active (Adapty-стиль).
+    func testPollStopsOnActiveGrant() {
+        let exp = expectation(description: "poll-active")
+        var attempts = 0
+        let active = EntitlementGrant(
+            level: "price_x", status: "active", expiresAt: nil, priceId: "price_x"
+        )
+        WebPaywallLauncher.pollForActiveGrant(
+            interval: 0.01,
+            maxAttempts: 5,
+            fetch: { cb in
+                attempts += 1
+                cb(attempts >= 2 ? active : nil) // nil, потом active на 2-й попытке
+            },
+            completion: { grant in
+                XCTAssertNotNil(grant)
+                XCTAssertTrue(grant?.isActive == true)
+                XCTAssertEqual(attempts, 2)
+                exp.fulfill()
+            }
+        )
+        wait(for: [exp], timeout: 2)
+    }
+
+    /// поллинг сдаётся (nil) после maxAttempts без active-гранта.
+    func testPollGivesUpAfterMaxAttempts() {
+        let exp = expectation(description: "poll-giveup")
+        var attempts = 0
+        WebPaywallLauncher.pollForActiveGrant(
+            interval: 0.01,
+            maxAttempts: 3,
+            fetch: { cb in
+                attempts += 1
+                cb(nil)
+            },
+            completion: { grant in
+                XCTAssertNil(grant)
+                XCTAssertEqual(attempts, 3)
+                exp.fulfill()
+            }
+        )
+        wait(for: [exp], timeout: 2)
+    }
 }
