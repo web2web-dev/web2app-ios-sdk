@@ -10,3 +10,6 @@ local.properties
 .DS_Store
 *.swp
 .idea/
+
+# Xcode/SPM local state
+.swiftpm/

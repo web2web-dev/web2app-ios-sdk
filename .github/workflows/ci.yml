@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Один прогон на ветку; новый пуш отменяет предыдущий (экономия платных macOS-минут).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build + test (iOS Simulator)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # Диагностика: какие iPhone-симуляторы реально доступны на раннере —
+      # если destination не совпадёт, из этого лога видно на что менять.
+      - name: Available iPhone simulators
+        run: xcrun simctl list devices available | grep -i iphone || true
+
+      - name: Build & test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme Web2AppSDK \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            CODE_SIGNING_ALLOWED=NO
