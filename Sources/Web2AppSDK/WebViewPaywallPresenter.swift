@@ -92,12 +92,26 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
         vc.view = webView
         vc.modalPresentationStyle = .fullScreen
 
-        let closeButton = UIButton(type: .close)
+        // Кнопка закрытия. Системный UIButton(type: .close) сливался со светлым
+        // фоном пейвола (крестик почти невидим). Свой контрастный вариант:
+        // белый крестик на тёмном полупрозрачном круге — видно на любом фоне.
+        let closeButton = UIButton(type: .system)
+        let symbolConfig = UIImage.SymbolConfiguration(
+            pointSize: 15, weight: .bold)
+        closeButton.setImage(
+            UIImage(systemName: "xmark", withConfiguration: symbolConfig),
+            for: .normal)
+        closeButton.tintColor = .white
+        closeButton.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        closeButton.layer.cornerRadius = 16
+        closeButton.accessibilityLabel = "Close"
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.addTarget(
             presenter, action: #selector(nativeCloseTapped), for: .touchUpInside)
         webView.addSubview(closeButton)
         NSLayoutConstraint.activate([
+            closeButton.widthAnchor.constraint(equalToConstant: 32),
+            closeButton.heightAnchor.constraint(equalToConstant: 32),
             closeButton.topAnchor.constraint(
                 equalTo: webView.safeAreaLayoutGuide.topAnchor, constant: 8),
             closeButton.trailingAnchor.constraint(
