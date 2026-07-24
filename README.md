@@ -110,6 +110,56 @@ SDK закроет шторку веб-пейвола и немедленно з
 «платным». Без регистрации схемы всё тоже работает: пользователь закрывает шторку
 сам, доступ приходит тем же guid-поллингом.
 
+### Ссылка из письма после оплаты (Universal Link)
+
+После успешной оплаты покупателю приходит письмо со ссылкой вида
+`https://<projectId>.go.<домен>/handoff/<КОД>` — одноразовый 8-символьный код в
+пути. Если приложение привязано к этому домену (Associated Domains:
+`applinks:<projectId>.go.<домен>`), iOS откроет приложение — обработчик пишете
+вы (Universal Link приходит приложению, SDK перехватить его не может):
+
+```swift
+// SceneDelegate (UIKit)
+func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+    guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+          let url = userActivity.webpageURL else { return }
+    handleHandoffLink(url)
+}
+
+func handleHandoffLink(_ url: URL) {
+    // pathComponents = ["/", "handoff", "<КОД>"]
+    guard url.pathComponents.count >= 3,
+          url.pathComponents[1] == "handoff" else { return }
+    Web2App.identify(deepLinkValue: url.pathComponents[2]) { result in
+        switch result {
+        case .success:
+            Web2App.entitlement { grant in
+                DispatchQueue.main.async {
+                    if grant?.isActive == true { /* открыть премиум */ }
+                }
+            }
+        case .failure:
+            // Код одноразовый (повторный тап = ошибка). guid уже мог быть
+            // сохранён ранее — сперва проверьте entitlement, и только при
+            // пустом ответе показывайте Web2App.requestEmailRecovery(email).
+            break
+        }
+    }
+}
+```
+
+```swift
+// SwiftUI — та же обработка, другая точка входа
+.onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+    if let url = activity.webpageURL { handleHandoffLink(url) }
+}
+```
+
+Не путать с кнопкой «Закрыть»: её ссылка — кастомная схема
+`<схема>://handoff?code=...`, она обрабатывается `handleReturnURL(_:)` (выше) и
+код намеренно не тратит. Ссылка из письма — Universal Link с кодом в пути, её
+обрабатывает `identify(deepLinkValue:)` и код расходует.
+
 ---
 
 ## Как это работает
