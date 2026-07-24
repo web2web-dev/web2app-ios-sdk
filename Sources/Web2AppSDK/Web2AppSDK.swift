@@ -129,6 +129,36 @@ public enum Web2App {
         #endif
     }
 
+    /// Открытие веб-пейвола ПО ID (SDK-трек PM 2026-07-24): интегратор знает
+    /// только `paywallId` из кабинета — SDK резолвит публичный URL через
+    /// `GET /public/paywall-url/:paywallId` (пейвол должен быть опубликован и
+    /// привязан к домену; иначе 404 → completion(nil)) и открывает его
+    /// существующим `openWebPaywall(paywallURL:)`-флоу (guid-поллинг,
+    /// handleReturnURL — всё работает как обычно).
+    public static func openWebPaywall(
+        paywallId: String,
+        email: String? = nil,
+        completion: @escaping (EntitlementGrant?) -> Void
+    ) {
+        guard let config else { return completion(nil) }
+        let resolveUrl = config.baseUrl
+            .appendingPathComponent("public/paywall-url")
+            .appendingPathComponent(paywallId)
+        URLSession.shared.dataTask(with: resolveUrl) { data, _, _ in
+            guard
+                let data,
+                let paywallURL = WebPaywallLauncher.parsePaywallUrlResponse(data)
+            else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            DispatchQueue.main.async {
+                openWebPaywall(
+                    paywallURL: paywallURL, email: email, completion: completion)
+            }
+        }.resume()
+    }
+
     // MARK: handleReturnURL (кнопка «Закрыть» на success-экране веб-пейвола)
 
     /// Обработчик возвратного deep-link'а из веб-пейвола: кнопка «Закрыть» на

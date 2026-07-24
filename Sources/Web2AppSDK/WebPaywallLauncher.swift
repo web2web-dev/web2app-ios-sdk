@@ -35,6 +35,20 @@ enum WebPaywallLauncher {
         return comps.url ?? paywallURL
     }
 
+    /// Открытие по paywallId (SDK-трек PM 2026-07-24): парсинг ответа
+    /// `GET /public/paywall-url/:paywallId` → URL опубликованного пейволла.
+    /// Мусор/404-тело → nil (совместимо с anti-enum бэка).
+    static func parsePaywallUrlResponse(_ data: Data) -> URL? {
+        guard
+            let obj = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+            let payload = obj["data"] as? [String: Any],
+            let urlString = payload["url"] as? String,
+            let url = URL(string: urlString)
+        else { return nil }
+        return url
+    }
+
     /// Возвратный deep-link кнопки «Закрыть» на success-экране (WEB-800):
     /// контракт `<схема-прилки>://handoff?code=...` → распознаём по host == "handoff",
     /// схему не проверяем (она клиентская и SDK неизвестна).

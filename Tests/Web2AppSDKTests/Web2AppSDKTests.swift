@@ -135,3 +135,22 @@ extension Web2AppSDKTests {
         XCTAssertTrue(Web2App.handleReturnURL(URL(string: "myapp://handoff?code=X")!))
     }
 }
+
+// MARK: - Открытие по paywallId (резолв публичного URL, SDK-трек PM 2026-07-24)
+
+extension Web2AppSDKTests {
+    /// Ответ ручки /public/paywall-url/:id парсится в URL.
+    func testParsePaywallUrlResponseHappyPath() {
+        let json = #"{"success":true,"data":{"url":"https://test.sharamuga.click"}}"#
+        let url = WebPaywallLauncher.parsePaywallUrlResponse(Data(json.utf8))
+        XCTAssertEqual(url?.absoluteString, "https://test.sharamuga.click")
+    }
+
+    /// Мусор/404-тело → nil (SDK отдаст completion(nil), приложение покажет свой фолбэк).
+    func testParsePaywallUrlResponseGarbage() {
+        XCTAssertNil(WebPaywallLauncher.parsePaywallUrlResponse(Data("{}".utf8)))
+        XCTAssertNil(WebPaywallLauncher.parsePaywallUrlResponse(Data("not json".utf8)))
+        let noUrl = #"{"success":true,"data":{}}"#
+        XCTAssertNil(WebPaywallLauncher.parsePaywallUrlResponse(Data(noUrl.utf8)))
+    }
+}
