@@ -75,7 +75,9 @@ Web2App.entitlement { grant in
 | `Web2App.entitlement(completion:)` | Получить текущий доступ пользователя (`grant.isActive`, `level`, `status`, `expiresAt`). |
 | `Web2App.currentGuid()` | Текущий идентификатор пользователя (если уже опознан). |
 | `Web2App.openWebPaywall(paywallURL:email:completion:)` | Показать веб-пейвол внутри приложения; completion вернёт активный доступ после оплаты (guid-поллинг). |
-| `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола: закрывает шторку и ускоряет получение доступа. |
+| `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола (Safari-режим): закрывает шторку и ускоряет получение доступа. |
+| `Web2App.openWebPaywall(paywallId:email:completion:)` | Открыть пейвол по его ID — публичный URL резолвится автоматически. |
+| `Web2App.openWebPaywallEmbedded(paywallURL:/paywallId:email:completion:)` | Встроенный WebView-режим: авто-закрытие при успехе оплаты, результат — типизированный `PaywallResult` (paid / notPaid / pending / unavailable). URL-схема не нужна. |
 
 Восстановление по email — два шага: `requestEmailRecovery(email)` отправляет пользователю
 письмо со ссылкой; когда он по ней перейдёт, ваше приложение получит код из диплинка и

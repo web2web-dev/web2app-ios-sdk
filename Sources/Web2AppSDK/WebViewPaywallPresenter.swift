@@ -16,6 +16,9 @@ public enum PaywallResult {
     /// Окно ожидания истекло без подтверждения (медленный вебхук/сеть).
     /// Доступ может появиться позже — перепроверьте `Web2App.entitlement`.
     case pending
+    /// Пейвол не был показан: SDK не сконфигурирован или платформа без UIKit
+    /// (ревью 0.4.1 — раньше маскировалось под notPaid).
+    case unavailable
 }
 
 /// События JS-моста `web2app` со страницы пейвола (WebView-режим).
@@ -53,8 +56,12 @@ enum BridgeEventParser {
 final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
     private var retained: WebViewPaywallPresenter?
     private weak var hostController: UIViewController?
+    private weak var contentController: WKUserContentController?
     private let onEvent: (BridgeEvent?) -> Void
     private var finished = false
+
+    /// Ревью 0.4.1: guard от одновременных показов (см. WebPaywallPresenter).
+    private static weak var active: WebViewPaywallPresenter?
 
     private init(onEvent: @escaping (BridgeEvent?) -> Void) {
         self.onEvent = onEvent
@@ -64,11 +71,19 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
     /// нативной кнопкой закрытия). `onEvent` вызывается РОВНО один раз:
     /// с событием моста (успех/кнопка) либо nil (юзер закрыл нативно).
     static func present(url: URL, onEvent: @escaping (BridgeEvent?) -> Void) {
+        // Ревью 0.4.1: повторный показ завершает предыдущий (его колбэк
+        // отработает по обычному пути), не осиротляя completion.
+        if let previous = active {
+            previous.finish(with: nil)
+        }
+
         let presenter = WebViewPaywallPresenter(onEvent: onEvent)
         presenter.retained = presenter // self-owning до finish
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(presenter, name: "web2app")
+        presenter.contentController = config.userContentController
+        Self.active = presenter
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.load(URLRequest(url: url))
@@ -116,6 +131,11 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
     private func finish(with event: BridgeEvent?) {
         guard !finished else { return }
         finished = true
+        // Ревью 0.4.1: снять script-handler явно — WKUserContentController
+        // держит хендлер сильно (классический WKWebView-цикл); сегодня цикла
+        // нет, но defense-in-depth дешевле будущей утечки.
+        contentController?.removeScriptMessageHandler(forName: "web2app")
+        if Self.active === self { Self.active = nil }
         let controller = hostController
         let callback = onEvent
         controller?.dismiss(animated: true) {

@@ -87,7 +87,9 @@ enum WebPaywallLauncher {
 /// iOS-презентер веб-пейвола в `SFSafariViewController`. Тонкая обёртка (не покрыта
 /// swift-test — UIKit/Safari только на девайсе/симуляторе). Держит делегат живым, пока
 /// экран открыт; вызывает `onDismiss`, когда пользователь закрывает браузер.
-final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate {
+final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate,
+    UIAdaptivePresentationControllerDelegate
+{
     private var retained: WebPaywallPresenter?
     private let onDismiss: () -> Void
     private weak var safari: SFSafariViewController?
@@ -103,11 +105,25 @@ final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate {
 
     /// Открывает `url` в SFSafariViewController поверх верхнего view controller.
     static func present(url: URL, onDismiss: @escaping () -> Void) {
+        // Ревью 0.4.1: повторный вызов при живом презентере раньше осиротял
+        // completion первого — теперь старый корректно завершается (его
+        // completion получит результат по обычному пути), новый идёт дальше.
+        if let previous = active {
+            previous.safari?.dismiss(animated: false)
+            previous.finish()
+        }
+
         let presenter = WebPaywallPresenter(onDismiss: onDismiss)
         presenter.retained = presenter // удержать до dismiss (self-owning)
 
         let safari = SFSafariViewController(url: url)
+        // Ревью 0.4.1 (CRITICAL): дефолтный .pageSheet смахивается свайпом,
+        // а safariViewControllerDidFinish на свайп НЕ приходит → completion
+        // зависал бы навсегда. fullScreen убирает свайп; делегат
+        // presentationController ниже — страховка на будущее.
+        safari.modalPresentationStyle = .fullScreen
         safari.delegate = presenter
+        safari.presentationController?.delegate = presenter
         presenter.safari = safari
 
         guard let top = Self.topViewController() else {
@@ -135,6 +151,15 @@ final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate {
     }
 
     func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        finish()
+    }
+
+    /// Ревью 0.4.1: интерактивное закрытие (свайп) не вызывает
+    /// safariViewControllerDidFinish — ловим его отдельно, иначе completion
+    /// приложения не сработал бы никогда.
+    func presentationControllerDidDismiss(
+        _ presentationController: UIPresentationController
+    ) {
         finish()
     }
 

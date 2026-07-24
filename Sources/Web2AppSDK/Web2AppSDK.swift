@@ -113,6 +113,11 @@ public enum Web2App {
 
         #if canImport(UIKit) && canImport(SafariServices)
         let client = EntitlementClient(config: config)
+        // Ревью 0.4.1: колбэк приложения — всегда на main (URLSession отдаёт
+        // ответы на фоновом потоке, а интеграторы дергают из completion UI).
+        let completeOnMain: (EntitlementGrant?) -> Void = { grant in
+            DispatchQueue.main.async { completion(grant) }
+        }
         WebPaywallPresenter.present(url: url) {
             // Браузер закрыт → поллим право по нашему guid (Adapty getProfile-стиль):
             // 30 попыток × 2с ≈ 60с окна, покрывает Stripe webhook→grant задержку.
@@ -120,7 +125,7 @@ public enum Web2App {
                 interval: 2.0,
                 maxAttempts: 30,
                 fetch: { cb in client.fetch(guid: guid, completion: cb) },
-                completion: completion
+                completion: completeOnMain
             )
         }
         #else
@@ -174,7 +179,7 @@ public enum Web2App {
         email: String? = nil,
         completion: @escaping (PaywallResult) -> Void
     ) {
-        guard let config else { return completion(.notPaid) }
+        guard let config else { return completion(.unavailable) }
         let guid = guidStore.load() ?? UUID().uuidString
         guidStore.save(guid)
         let url = WebPaywallLauncher.appOriginURL(
@@ -182,25 +187,30 @@ public enum Web2App {
 
         #if canImport(UIKit) && canImport(WebKit)
         let client = EntitlementClient(config: config)
+        // Ревью 0.4.1: результат — всегда на main-потоке.
+        let completeOnMain: (PaywallResult) -> Void = { result in
+            DispatchQueue.main.async { completion(result) }
+        }
         WebViewPaywallPresenter.present(url: url) { event in
             // Успех с моста → грант уже записан (ранний грант на бэке) —
-            // короткий поллинг добирает его; закрытие без успеха → быстрый
-            // одиночный чек (вдруг оплатил, но событие не дошло).
-            let attempts = event == .paymentSuccess ? 10 : 2
+            // короткий поллинг добирает его. Закрытие без успеха — окно шире
+            // (ревью 0.4.1): юзер мог оплатить и закрыть до прихода
+            // мост-события; 2с давали false-negative «notPaid» оплатившему.
+            let attempts = 10
             WebPaywallLauncher.pollForActiveGrant(
                 interval: 1.0,
                 maxAttempts: attempts,
                 fetch: { cb in client.fetch(guid: guid, completion: cb) }
             ) { grant in
                 if let grant {
-                    completion(.paid(grant))
+                    completeOnMain(.paid(grant))
                 } else {
-                    completion(event == .paymentSuccess ? .pending : .notPaid)
+                    completeOnMain(event == .paymentSuccess ? .pending : .notPaid)
                 }
             }
         }
         #else
-        completion(.notPaid)
+        completion(.unavailable)
         #endif
     }
 
@@ -211,7 +221,7 @@ public enum Web2App {
         email: String? = nil,
         completion: @escaping (PaywallResult) -> Void
     ) {
-        guard let config else { return completion(.notPaid) }
+        guard let config else { return completion(.unavailable) }
         let resolveUrl = config.baseUrl
             .appendingPathComponent("public/paywall-url")
             .appendingPathComponent(paywallId)
@@ -220,7 +230,7 @@ public enum Web2App {
                 let data,
                 let paywallURL = WebPaywallLauncher.parsePaywallUrlResponse(data)
             else {
-                DispatchQueue.main.async { completion(.notPaid) }
+                DispatchQueue.main.async { completion(.unavailable) }
                 return
             }
             DispatchQueue.main.async {
