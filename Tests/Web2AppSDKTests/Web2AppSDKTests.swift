@@ -154,3 +154,25 @@ extension Web2AppSDKTests {
         XCTAssertNil(WebPaywallLauncher.parsePaywallUrlResponse(Data(noUrl.utf8)))
     }
 }
+
+// MARK: - JS-мост WebView-режима (0.4.0)
+
+extension Web2AppSDKTests {
+    /// Событие успеха оплаты с моста распознаётся.
+    func testBridgeParsesPaymentSuccess() {
+        let body: [String: Any] = ["source": "web2app", "event": "paywall_result", "status": "success"]
+        XCTAssertEqual(BridgeEventParser.parse(body), .paymentSuccess)
+    }
+
+    /// Кнопка «Закрыть» с моста распознаётся.
+    func testBridgeParsesClose() {
+        XCTAssertEqual(BridgeEventParser.parse(["event": "close"]), .close)
+    }
+
+    /// Мусор/чужие события → nil (SDK игнорирует).
+    func testBridgeRejectsGarbage() {
+        XCTAssertNil(BridgeEventParser.parse("строка"))
+        XCTAssertNil(BridgeEventParser.parse(["event": "unknown"]))
+        XCTAssertNil(BridgeEventParser.parse(["event": "paywall_result", "status": "fail"]))
+    }
+}

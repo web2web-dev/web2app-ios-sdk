@@ -159,6 +159,77 @@ public enum Web2App {
         }.resume()
     }
 
+    // MARK: openWebPaywallEmbedded (WKWebView-режим с JS-мостом, 0.4.0)
+
+    /// Показывает веб-пейвол во ВСТРОЕННОМ WKWebView с JS-мостом: при успехе
+    /// оплаты пейвол закрывается АВТОМАТИЧЕСКИ (страница шлёт событие мосту),
+    /// кнопка «Закрыть» тоже обрабатывается без URL-схемы. Результат
+    /// типизирован (`PaywallResult`): paid / notPaid / pending — приложение
+    /// сразу знает, запускать ли платный флоу или свои проверки.
+    ///
+    /// Отличие от `openWebPaywall(paywallURL:)` (Safari-режим): не требует
+    /// регистрации URL-схемы; но страница живёт в вашем процессе (WKWebView).
+    public static func openWebPaywallEmbedded(
+        paywallURL: URL,
+        email: String? = nil,
+        completion: @escaping (PaywallResult) -> Void
+    ) {
+        guard let config else { return completion(.notPaid) }
+        let guid = guidStore.load() ?? UUID().uuidString
+        guidStore.save(guid)
+        let url = WebPaywallLauncher.appOriginURL(
+            paywallURL: paywallURL, email: email, guid: guid)
+
+        #if canImport(UIKit) && canImport(WebKit)
+        let client = EntitlementClient(config: config)
+        WebViewPaywallPresenter.present(url: url) { event in
+            // Успех с моста → грант уже записан (ранний грант на бэке) —
+            // короткий поллинг добирает его; закрытие без успеха → быстрый
+            // одиночный чек (вдруг оплатил, но событие не дошло).
+            let attempts = event == .paymentSuccess ? 10 : 2
+            WebPaywallLauncher.pollForActiveGrant(
+                interval: 1.0,
+                maxAttempts: attempts,
+                fetch: { cb in client.fetch(guid: guid, completion: cb) }
+            ) { grant in
+                if let grant {
+                    completion(.paid(grant))
+                } else {
+                    completion(event == .paymentSuccess ? .pending : .notPaid)
+                }
+            }
+        }
+        #else
+        completion(.notPaid)
+        #endif
+    }
+
+    /// Встроенный показ по paywallId — резолв URL той же публичной ручкой,
+    /// затем `openWebPaywallEmbedded(paywallURL:)`.
+    public static func openWebPaywallEmbedded(
+        paywallId: String,
+        email: String? = nil,
+        completion: @escaping (PaywallResult) -> Void
+    ) {
+        guard let config else { return completion(.notPaid) }
+        let resolveUrl = config.baseUrl
+            .appendingPathComponent("public/paywall-url")
+            .appendingPathComponent(paywallId)
+        URLSession.shared.dataTask(with: resolveUrl) { data, _, _ in
+            guard
+                let data,
+                let paywallURL = WebPaywallLauncher.parsePaywallUrlResponse(data)
+            else {
+                DispatchQueue.main.async { completion(.notPaid) }
+                return
+            }
+            DispatchQueue.main.async {
+                openWebPaywallEmbedded(
+                    paywallURL: paywallURL, email: email, completion: completion)
+            }
+        }.resume()
+    }
+
     // MARK: handleReturnURL (кнопка «Закрыть» на success-экране веб-пейвола)
 
     /// Обработчик возвратного deep-link'а из веб-пейвола: кнопка «Закрыть» на

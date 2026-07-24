@@ -3,6 +3,17 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 проект следует семантическому версионированию (SemVer).
 
+## [0.4.0] — 2026-07-24
+
+### Added
+- `Web2App.openWebPaywall(paywallId:...)` — открытие пейвола по его ID:
+  SDK сам резолвит публичный URL через `GET /public/paywall-url/:paywallId`.
+- `Web2App.openWebPaywallEmbedded(paywallURL:/paywallId:...)` — встроенный
+  WKWebView-режим с JS-мостом: при успехе оплаты пейвол закрывается
+  автоматически, кнопка «Закрыть» обрабатывается без URL-схемы.
+- `PaywallResult` — типизированный результат: `.paid(grant)` / `.notPaid` /
+  `.pending` (вместо неоднозначного `EntitlementGrant?`).
+
 ## [0.3.0] — 2026-07-24
 
 ### Added
