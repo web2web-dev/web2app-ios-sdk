@@ -92,30 +92,42 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
         vc.view = webView
         vc.modalPresentationStyle = .fullScreen
 
-        // Кнопка закрытия. Системный UIButton(type: .close) сливался со светлым
-        // фоном пейвола (крестик почти невидим). Свой контрастный вариант:
-        // белый крестик на тёмном полупрозрачном круге — видно на любом фоне.
+        // Кнопка закрытия. Вместо тёмного круга — размытая подложка (blur /
+        // frosted glass): подстраивается под фон пейвола (не давит тёмным
+        // пятном на светлом), а крестик поверх остаётся читаемым. tint .label
+        // адаптируется к светлой/тёмной теме.
+        let blur = UIVisualEffectView(
+            effect: UIBlurEffect(style: .systemThinMaterial))
+        blur.translatesAutoresizingMaskIntoConstraints = false
+        blur.layer.cornerRadius = 16
+        blur.clipsToBounds = true
+        blur.isUserInteractionEnabled = false
+
         let closeButton = UIButton(type: .system)
         let symbolConfig = UIImage.SymbolConfiguration(
             pointSize: 15, weight: .bold)
         closeButton.setImage(
             UIImage(systemName: "xmark", withConfiguration: symbolConfig),
             for: .normal)
-        closeButton.tintColor = .white
-        closeButton.backgroundColor = UIColor.black.withAlphaComponent(0.45)
-        closeButton.layer.cornerRadius = 16
+        closeButton.tintColor = .label
         closeButton.accessibilityLabel = "Close"
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.addTarget(
             presenter, action: #selector(nativeCloseTapped), for: .touchUpInside)
+
+        webView.addSubview(blur)
         webView.addSubview(closeButton)
         NSLayoutConstraint.activate([
-            closeButton.widthAnchor.constraint(equalToConstant: 32),
-            closeButton.heightAnchor.constraint(equalToConstant: 32),
-            closeButton.topAnchor.constraint(
+            blur.widthAnchor.constraint(equalToConstant: 32),
+            blur.heightAnchor.constraint(equalToConstant: 32),
+            blur.topAnchor.constraint(
                 equalTo: webView.safeAreaLayoutGuide.topAnchor, constant: 8),
-            closeButton.trailingAnchor.constraint(
+            blur.trailingAnchor.constraint(
                 equalTo: webView.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            closeButton.topAnchor.constraint(equalTo: blur.topAnchor),
+            closeButton.bottomAnchor.constraint(equalTo: blur.bottomAnchor),
+            closeButton.leadingAnchor.constraint(equalTo: blur.leadingAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: blur.trailingAnchor),
         ])
 
         presenter.hostController = vc
