@@ -129,6 +129,29 @@ public enum Web2App {
         #endif
     }
 
+    // MARK: handleReturnURL (кнопка «Закрыть» на success-экране веб-пейвола)
+
+    /// Обработчик возвратного deep-link'а из веб-пейвола: кнопка «Закрыть» на
+    /// success-экране ведёт на `<схема-прилки>://handoff?code=...` (WEB-800).
+    /// Интегратор: (1) регистрирует свою схему (CFBundleURLTypes) и указывает её
+    /// в кабинете проекта (bridgeConfig.returnScheme); (2) зовёт этот метод из
+    /// своего URL-обработчика (`application(_:open:)` / SceneDelegate
+    /// `openURLContexts`) для ВСЕХ входящих URL — чужие вернут false.
+    ///
+    /// Что делает при распознавании: закрывает открытую шторку веб-пейвола —
+    /// это триггерит уже существующий guid-поллинг права, и completion исходного
+    /// `openWebPaywall` получает активный грант (юзер вернулся «уже платным»).
+    /// `code` из ссылки намеренно НЕ консьюмится: доступ приходит по guid, а
+    /// токен остаётся валидным для магик-линк письма.
+    @discardableResult
+    public static func handleReturnURL(_ url: URL) -> Bool {
+        guard WebPaywallLauncher.isHandoffReturnURL(url) else { return false }
+        #if canImport(UIKit) && canImport(SafariServices)
+        WebPaywallPresenter.dismissActive()
+        #endif
+        return true
+    }
+
     #if DEBUG
     /// DEBUG-only: инъекция guid для локального/симулятор-теста (реальной атрибуции на
     /// эмуляторе нет). В release-сборке компилируется ВОН — в проде недоступно.

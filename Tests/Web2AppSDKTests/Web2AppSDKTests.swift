@@ -105,3 +105,33 @@ final class Web2AppSDKTests: XCTestCase {
         wait(for: [exp], timeout: 2)
     }
 }
+
+// MARK: - Возвратный deep-link «Закрыть» (WEB-800 контракт <scheme>://handoff?code=...)
+
+extension Web2AppSDKTests {
+    /// Возвратная ссылка success-экрана распознаётся по host == "handoff".
+    func testIsHandoffReturnURLRecognizesContractLink() {
+        XCTAssertTrue(
+            WebPaywallLauncher.isHandoffReturnURL(URL(string: "myapp://handoff?code=ABCD1234")!)
+        )
+        XCTAssertTrue(
+            WebPaywallLauncher.isHandoffReturnURL(URL(string: "MyApp://HANDOFF")!)
+        )
+    }
+
+    /// Чужие deep-link'и приложения НЕ распознаются как наш возврат.
+    func testIsHandoffReturnURLRejectsForeignLinks() {
+        XCTAssertFalse(
+            WebPaywallLauncher.isHandoffReturnURL(URL(string: "myapp://settings")!)
+        )
+        XCTAssertFalse(
+            WebPaywallLauncher.isHandoffReturnURL(URL(string: "https://example.com/handoff")!)
+        )
+    }
+
+    /// Публичный обработчик: не-наш URL → false (интегратор передаёт все URL подряд).
+    func testHandleReturnURLPassesThroughForeignLinks() {
+        XCTAssertFalse(Web2App.handleReturnURL(URL(string: "myapp://other")!))
+        XCTAssertTrue(Web2App.handleReturnURL(URL(string: "myapp://handoff?code=X")!))
+    }
+}

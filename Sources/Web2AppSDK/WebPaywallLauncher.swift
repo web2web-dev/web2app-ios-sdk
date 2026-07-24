@@ -35,6 +35,13 @@ enum WebPaywallLauncher {
         return comps.url ?? paywallURL
     }
 
+    /// Возвратный deep-link кнопки «Закрыть» на success-экране (WEB-800):
+    /// контракт `<схема-прилки>://handoff?code=...` → распознаём по host == "handoff",
+    /// схему не проверяем (она клиентская и SDK неизвестна).
+    static func isHandoffReturnURL(_ url: URL) -> Bool {
+        url.host?.lowercased() == "handoff"
+    }
+
     /// Поллит `fetch` каждые `interval` секунд до `maxAttempts` попыток. Останавливается и
     /// отдаёт грант, как только он `isActive`; отдаёт `nil`, если active-грант не появился в
     /// бюджете попыток. `fetch` инъектируется (сеть/тест) — сама оркестрация POC-независима.
@@ -69,6 +76,12 @@ enum WebPaywallLauncher {
 final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate {
     private var retained: WebPaywallPresenter?
     private let onDismiss: () -> Void
+    private weak var safari: SFSafariViewController?
+    private var finished = false
+
+    /// Последний открытый веб-пейвол — для программного закрытия по возвратному
+    /// deep-link'у (`Web2App.handleReturnURL`). weak: presenter self-owning до finish.
+    private static weak var active: WebPaywallPresenter?
 
     private init(onDismiss: @escaping () -> Void) {
         self.onDismiss = onDismiss
@@ -81,6 +94,7 @@ final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate {
 
         let safari = SFSafariViewController(url: url)
         safari.delegate = presenter
+        presenter.safari = safari
 
         guard let top = Self.topViewController() else {
             // Нет UI-контекста — сразу отдаём управление (прилка сама решит).
@@ -88,11 +102,35 @@ final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate {
             onDismiss()
             return
         }
+        Self.active = presenter
         top.present(safari, animated: true)
     }
 
+    /// Программно закрывает активную шторку веб-пейвола (возврат по кнопке
+    /// «Закрыть» на success-экране). `finish()` дергает onDismiss → стартует
+    /// немедленный guid-поллинг права. Возвращает false, если шторки нет.
+    @discardableResult
+    static func dismissActive() -> Bool {
+        guard let presenter = active else { return false }
+        if let safari = presenter.safari, safari.presentingViewController != nil {
+            safari.dismiss(animated: true) { presenter.finish() }
+        } else {
+            presenter.finish()
+        }
+        return true
+    }
+
     func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        finish()
+    }
+
+    /// Единая точка завершения: onDismiss строго один раз (юзер закрыл шторку
+    /// сам ИЛИ её закрыл handleReturnURL — не оба).
+    private func finish() {
+        guard !finished else { return }
+        finished = true
         onDismiss()
+        if Self.active === self { Self.active = nil }
         retained = nil // отпустить self после закрытия
     }
 

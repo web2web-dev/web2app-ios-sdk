@@ -74,10 +74,39 @@ Web2App.entitlement { grant in
 | `Web2App.requestEmailRecovery(_:completion:)` | Запросить восстановление по email — мы отправим пользователю ссылку-магнит. |
 | `Web2App.entitlement(completion:)` | Получить текущий доступ пользователя (`grant.isActive`, `level`, `status`, `expiresAt`). |
 | `Web2App.currentGuid()` | Текущий идентификатор пользователя (если уже опознан). |
+| `Web2App.openWebPaywall(paywallURL:email:completion:)` | Показать веб-пейвол внутри приложения; completion вернёт активный доступ после оплаты (guid-поллинг). |
+| `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола: закрывает шторку и ускоряет получение доступа. |
 
 Восстановление по email — два шага: `requestEmailRecovery(email)` отправляет пользователю
 письмо со ссылкой; когда он по ней перейдёт, ваше приложение получит код из диплинка и
 передаёт его снова в `identify(deepLinkValue: code)`.
+
+### Возврат из веб-пейвола кнопкой «Закрыть»
+
+После оплаты на веб-пейволе пользователь видит экран «Доступ открыт» с маленькой
+кнопкой «Закрыть». Чтобы она бесшовно возвращала в ваше приложение:
+
+1. Зарегистрируйте custom URL-scheme приложения (`CFBundleURLTypes` в Info.plist),
+   например `myapp`.
+2. Укажите эту же схему в кабинете проекта (настройка «Схема возврата» /
+   `bridgeConfig.returnScheme`) — наш сервер начнёт выдавать кнопке ссылку вида
+   `myapp://handoff?code=...`.
+3. Передавайте входящие URL в SDK из своего обработчика:
+
+```swift
+// AppDelegate
+func application(_ app: UIApplication, open url: URL,
+                 options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+    if Web2App.handleReturnURL(url) { return true }
+    // ... ваши остальные deep-link'и
+    return false
+}
+```
+
+SDK закроет шторку веб-пейвола и немедленно запустит проверку доступа — completion
+исходного `openWebPaywall` получит активный грант, пользователь возвращается уже
+«платным». Без регистрации схемы всё тоже работает: пользователь закрывает шторку
+сам, доступ приходит тем же guid-поллингом.
 
 ---
 
