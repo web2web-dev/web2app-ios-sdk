@@ -78,10 +78,97 @@ Web2App.entitlement { grant in
 | `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола (Safari-режим): закрывает шторку и ускоряет получение доступа. |
 | `Web2App.openWebPaywall(paywallId:email:completion:)` | Открыть пейвол по его ID — публичный URL резолвится автоматически. |
 | `Web2App.openWebPaywallEmbedded(paywallURL:/paywallId:email:completion:)` | Встроенный WebView-режим: авто-закрытие при успехе оплаты, результат — типизированный `PaywallResult` (paid / notPaid / pending / unavailable). URL-схема не нужна. |
+| `Web2App.openQuizEmbedded(quizURL:email:completion:)` | Показать КВИЗ встроенным WebView. Результат — `QuizResult` (закрыт страницей / пользователем / оплатой). Права не поллит. |
+| `Web2App.setFunnelEventListener(_:)` | Подписаться на события прохождения воронки из встроенного показа (`quiz_start`, `quiz_answer`, …). |
+
+У методов открытия страницы есть ещё два опциональных параметра —
+`adaptyProfileId:` и `revenuecatProfileId:` (см. «Adapty / RevenueCat» ниже).
 
 Восстановление по email — два шага: `requestEmailRecovery(email)` отправляет пользователю
 письмо со ссылкой; когда он по ней перейдёт, ваше приложение получит код из диплинка и
 передаёт его снова в `identify(deepLinkValue: code)`.
+
+### События прохождения воронки
+
+Страница во встроенном WebView (`openWebPaywallEmbedded`, `openQuizEmbedded`) шлёт
+SDK события прохождения. Подпишитесь один раз — и складывайте их в свою аналитику:
+
+```swift
+Web2App.setFunnelEventListener { name, data in
+    // name: quiz_start | quiz_screen_view | quiz_answer | quiz_email_submit |
+    //       quiz_complete | paywall_result | close
+    analytics.log(name, [
+        "screenId": data.screenId as Any,
+        "screenIndex": data.screenIndex as Any,
+        "screenTotal": data.screenTotal as Any,
+        "blockId": data.blockId as Any,
+        "blockType": data.blockType as Any,
+    ])
+}
+// отписаться:
+Web2App.setFunnelEventListener(nil)
+```
+
+- Колбэк приходит на **главный поток** — можно сразу трогать UI.
+- Любое поле `FunnelEventData` может быть `nil` (зависит от события) — это норма.
+- **PII в мост не уходит:** email и сырые тексты ответов страница вырезает у себя,
+  до SDK доезжают только идентификаторы.
+- **События воронки ничего не закрывают.** Показ завершают ровно два: успешная
+  оплата (`paywall_result` со статусом `success`) и `close`. В частности,
+  `quiz_complete` окно НЕ закрывает — после квиза страница часто сама ведёт на
+  пейвол в том же WebView.
+- Незнакомые события SDK молча игнорирует — новые имена на вебе ваше приложение
+  не сломают.
+
+### Квиз во встроенном WebView
+
+```swift
+Web2App.setFunnelEventListener { name, _ in analytics.log(name) }
+
+Web2App.openQuizEmbedded(quizURL: URL(string: "https://client.example.com/q/quiz-1")!) { result in
+    switch result {
+    case .closed(.paid):    // внутри того же WebView прошла оплата
+        Web2App.entitlement { grant in if grant?.isActive == true { unlock() } }
+    case .closed(.page):    // страница попросила закрыть экран
+        break
+    case .closed(.user):    // пользователь нажал нативный крестик
+        break
+    case .unavailable:      // не вызван configure — экран не показывали
+        break
+    }
+}
+```
+
+Отличия от пейвола: оплаты у квиза нет, поэтому SDK **не поллит право** и не
+возвращает `PaywallResult` — наблюдаемое — это поток событий (в
+`setFunnelEventListener`) плюс факт закрытия. Грант после `.closed(.paid)`
+подтверждайте через `Web2App.entitlement`: подтверждение оплаты доезжает
+вебхуком и может отставать на несколько секунд.
+
+`quizURL` — **готовый** URL опубликованного квиза. Резолва «URL квиза по ID» на
+бэкенде нет (он существует только для пейволов), поэтому открытия квиза по ID в
+SDK нет.
+
+### Adapty / RevenueCat: передать profile-id на страницу
+
+Если подписки у вас на Adapty или RevenueCat — возьмите profile-id из их SDK
+и передайте его в момент открытия страницы:
+
+```swift
+Web2App.openWebPaywallEmbedded(
+    paywallURL: url,
+    email: userEmail,
+    adaptyProfileId: adaptyProfile.profileId,      // или
+    revenuecatProfileId: rcCustomerInfo.originalAppUserId
+) { result in ... }
+```
+
+SDK допишет их в URL страницы параметрами `adapty_profile_id` /
+`revenuecat_profile_id`; связывание профиля с `guid` веб-страница делает сама —
+отдельную ручку звать не надо. Пустые значения не отправляются. Параметры есть у
+всех четырёх методов открытия (`openWebPaywall` по URL и по ID,
+`openWebPaywallEmbedded`, `openQuizEmbedded`) и **опциональны** — существующие
+вызовы менять не нужно.
 
 ### Возврат из веб-пейвола кнопкой «Закрыть»
 

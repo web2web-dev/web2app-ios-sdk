@@ -17,6 +17,57 @@ public enum Web2App {
     private static var config: Web2AppConfig?
     private static let guidStore = GuidStore()
 
+    /// Слушатель событий воронки (`setFunnelEventListener`). Под замком —
+    /// пишется с потока интегратора, читается с потока моста (аналог
+    /// `@Volatile` в Android-SDK).
+    private static var funnelEventListener: ((String, FunnelEventData) -> Void)?
+    private static let funnelEventLock = NSLock()
+
+    // MARK: setFunnelEventListener (Б-1 — события воронки из моста)
+
+    /// Б-1 — слушатель событий воронки из встроенного показа (WebView-мост).
+    ///
+    /// Страница шлёт события прохождения квиза (`quiz_start`, `quiz_screen_view`,
+    /// `quiz_answer`, `quiz_email_submit`, `quiz_complete`) и пейвола
+    /// (`paywall_result`, `close`). Слушатель получает имя события и безопасные
+    /// поля (`FunnelEventData`) — PII в мост не уходит.
+    ///
+    /// ⚠ События воронки НИЧЕГО не закрывают: показ завершают ровно
+    /// `paywall_result:success` и `close` (см. `BridgeEventParser.terminalEvent`).
+    ///
+    /// Колбэк приходит на ГЛАВНЫЙ поток — из него можно сразу трогать UI
+    /// (общее правило SDK).
+    ///
+    /// ```swift
+    /// Web2App.setFunnelEventListener { name, data in
+    ///     analytics.log(name, ["screen": data.screenIndex as Any])
+    /// }
+    /// ```
+    ///
+    /// `nil` — отписаться.
+    public static func setFunnelEventListener(
+        _ listener: ((_ name: String, _ data: FunnelEventData) -> Void)?
+    ) {
+        funnelEventLock.lock()
+        funnelEventListener = listener
+        funnelEventLock.unlock()
+    }
+
+    /// Точка входа моста. Слушателя нет → не делаем даже прыжка на главный поток.
+    /// Если мы уже на главном (штатный путь `WKScriptMessageHandler`) — зовём
+    /// синхронно, чтобы не переставлять события местами.
+    static func emitFunnelEvent(_ name: String, _ data: FunnelEventData) {
+        funnelEventLock.lock()
+        let listener = funnelEventListener
+        funnelEventLock.unlock()
+        guard let listener else { return }
+        if Thread.isMainThread {
+            listener(name, data)
+        } else {
+            DispatchQueue.main.async { listener(name, data) }
+        }
+    }
+
     // MARK: configure
 
     /// Инициализация. `projectId` = ключ проекта арендатора; `baseUrl` = наш API.
@@ -96,11 +147,17 @@ public enum Web2App {
     /// прилки (юзер может поправить на вебе). `completion` — активный `EntitlementGrant`
     /// или `nil`, если за окно поллинга право не появилось (юзер закрыл/не оплатил).
     ///
+    /// Б-3: `adaptyProfileId` / `revenuecatProfileId` — profile-id подписочной платформы,
+    /// если она у вас есть. SDK лишь дописывает их в URL страницы; связывание профиля с
+    /// guid делает веб-страница сама (отдельную ручку звать не надо).
+    ///
     /// ⚠ MVP-1: сигнатура принимает готовый `paywallURL`. Серверный резолв
     /// `projectId → дефолт-пейвол-URL` (Adapty-плейсменты) — отдельный follow-up.
     public static func openWebPaywall(
         paywallURL: URL,
         email: String? = nil,
+        adaptyProfileId: String? = nil,
+        revenuecatProfileId: String? = nil,
         completion: @escaping (EntitlementGrant?) -> Void
     ) {
         guard let config else { return completion(nil) }
@@ -109,7 +166,12 @@ public enum Web2App {
         // персистим — grant на вебе ляжет на него, по нему же поллим entitlement.
         let guid = guidStore.load() ?? UUID().uuidString
         guidStore.save(guid)
-        let url = WebPaywallLauncher.appOriginURL(paywallURL: paywallURL, email: email, guid: guid)
+        let url = WebPaywallLauncher.appOriginURL(
+            paywallURL: paywallURL,
+            email: email,
+            guid: guid,
+            adaptyProfileId: adaptyProfileId,
+            revenuecatProfileId: revenuecatProfileId)
 
         #if canImport(UIKit) && canImport(SafariServices)
         let client = EntitlementClient(config: config)
@@ -143,6 +205,8 @@ public enum Web2App {
     public static func openWebPaywall(
         paywallId: String,
         email: String? = nil,
+        adaptyProfileId: String? = nil,
+        revenuecatProfileId: String? = nil,
         completion: @escaping (EntitlementGrant?) -> Void
     ) {
         guard let config else { return completion(nil) }
@@ -159,7 +223,11 @@ public enum Web2App {
             }
             DispatchQueue.main.async {
                 openWebPaywall(
-                    paywallURL: paywallURL, email: email, completion: completion)
+                    paywallURL: paywallURL,
+                    email: email,
+                    adaptyProfileId: adaptyProfileId,
+                    revenuecatProfileId: revenuecatProfileId,
+                    completion: completion)
             }
         }.resume()
     }
@@ -174,16 +242,26 @@ public enum Web2App {
     ///
     /// Отличие от `openWebPaywall(paywallURL:)` (Safari-режим): не требует
     /// регистрации URL-схемы; но страница живёт в вашем процессе (WKWebView).
+    ///
+    /// Б-3: `adaptyProfileId` / `revenuecatProfileId` — profile-id вашей подписочной
+    /// платформы (берётся из её SDK ДО показа страницы). SDK дописывает их в URL
+    /// страницы; связывание профиля с guid делает сама страница на сервере.
     public static func openWebPaywallEmbedded(
         paywallURL: URL,
         email: String? = nil,
+        adaptyProfileId: String? = nil,
+        revenuecatProfileId: String? = nil,
         completion: @escaping (PaywallResult) -> Void
     ) {
         guard let config else { return completion(.unavailable) }
         let guid = guidStore.load() ?? UUID().uuidString
         guidStore.save(guid)
         let url = WebPaywallLauncher.appOriginURL(
-            paywallURL: paywallURL, email: email, guid: guid)
+            paywallURL: paywallURL,
+            email: email,
+            guid: guid,
+            adaptyProfileId: adaptyProfileId,
+            revenuecatProfileId: revenuecatProfileId)
 
         #if canImport(UIKit) && canImport(WebKit)
         let client = EntitlementClient(config: config)
@@ -219,6 +297,8 @@ public enum Web2App {
     public static func openWebPaywallEmbedded(
         paywallId: String,
         email: String? = nil,
+        adaptyProfileId: String? = nil,
+        revenuecatProfileId: String? = nil,
         completion: @escaping (PaywallResult) -> Void
     ) {
         guard let config else { return completion(.unavailable) }
@@ -235,9 +315,82 @@ public enum Web2App {
             }
             DispatchQueue.main.async {
                 openWebPaywallEmbedded(
-                    paywallURL: paywallURL, email: email, completion: completion)
+                    paywallURL: paywallURL,
+                    email: email,
+                    adaptyProfileId: adaptyProfileId,
+                    revenuecatProfileId: revenuecatProfileId,
+                    completion: completion)
             }
         }.resume()
+    }
+
+    // MARK: openQuizEmbedded (Б-2 — квиз во встроенном WebView)
+
+    /// Б-2 — открытие КВИЗА встроенным WebView (тот же показ, что у пейвола:
+    /// full-screen WKWebView + JS-мост `web2app`).
+    ///
+    /// **Результат другой, чем у пейвола.** Оплаты у квиза нет, поэтому метод не
+    /// возвращает `PaywallResult` и не поллит право: наблюдаемое — поток событий
+    /// прохождения (`quiz_start`, `quiz_screen_view`, `quiz_answer`,
+    /// `quiz_email_submit`, `quiz_complete`), он идёт в `setFunnelEventListener`, —
+    /// плюс факт закрытия экрана в `completion`.
+    ///
+    /// ⚠ `quiz_complete` экран НЕ закрывает: после квиза страница часто сама ведёт
+    /// на пейвол в том же WebView. Закрывают показ те же два терминальных события,
+    /// что и у пейвола (`paywall_result:success` и `close`), плюс нативное закрытие
+    /// юзером — какое из трёх сработало, видно в `QuizCloseReason`.
+    ///
+    /// `quizURL` — ГОТОВЫЙ URL опубликованного квиза. Резолва «URL квиза по ID» на
+    /// бэкенде нет (`/public/paywall-url/:paywallId` существует только для пейволов),
+    /// поэтому `openQuiz(quizId:)` в SDK намеренно отсутствует.
+    /// `email` — опц. prefill. `adaptyProfileId` / `revenuecatProfileId` — profile-id
+    /// подписочной платформы: SDK дописывает их в URL, связывание с guid делает
+    /// сама страница.
+    ///
+    /// guid кладётся в URL так же, как для пейвола — веб связывает прохождение квиза
+    /// с тем же пользователем. Без `configure` guid некуда персистить, поэтому экран
+    /// не показывается: `QuizResult.unavailable`.
+    ///
+    /// `completion` приходит на ГЛАВНЫЙ поток РОВНО один раз.
+    ///
+    /// ```swift
+    /// Web2App.setFunnelEventListener { name, data in analytics.log(name) }
+    /// Web2App.openQuizEmbedded(quizURL: url) { result in
+    ///     if result == .closed(.paid) {
+    ///         Web2App.entitlement { grant in if grant?.isActive == true { unlock() } }
+    ///     }
+    /// }
+    /// ```
+    public static func openQuizEmbedded(
+        quizURL: URL,
+        email: String? = nil,
+        adaptyProfileId: String? = nil,
+        revenuecatProfileId: String? = nil,
+        completion: @escaping (QuizResult) -> Void
+    ) {
+        // Без configure guid не сохранить: веб связал бы прохождение с ключом,
+        // который прилка тут же потеряет. Экран не показываем — это НЕ «закрыли».
+        guard config != nil else { return completion(.unavailable) }
+        let guid = guidStore.load() ?? UUID().uuidString
+        guidStore.save(guid)
+        let url = QuizPresentation.quizURL(
+            quizURL: quizURL,
+            email: email,
+            guid: guid,
+            adaptyProfileId: adaptyProfileId,
+            revenuecatProfileId: revenuecatProfileId)
+
+        #if canImport(UIKit) && canImport(WebKit)
+        // Тот же презентер, что у пейвола — разница только в том, что делает
+        // колбэк: у квиза оплаты нет, поэтому событие закрытия сразу отображается
+        // в QuizResult, без поллинга гранта.
+        WebViewPaywallPresenter.present(url: url) { event in
+            let result = QuizPresentation.result(for: event)
+            DispatchQueue.main.async { completion(result) }
+        }
+        #else
+        completion(.unavailable)
+        #endif
     }
 
     // MARK: handleReturnURL (кнопка «Закрыть» на success-экране веб-пейвола)

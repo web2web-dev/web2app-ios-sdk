@@ -21,32 +21,9 @@ public enum PaywallResult {
     case unavailable
 }
 
-/// События JS-моста `web2app` со страницы пейвола (WebView-режим).
-/// Страница шлёт их через `window.webkit.messageHandlers.web2app.postMessage`:
-///  - `{event: "paywall_result", status: "success"}` — оплата подтверждена
-///    (авто, без действий юзера);
-///  - `{event: "close"}` — тап по кнопке «Закрыть».
-enum BridgeEvent: Equatable {
-    case paymentSuccess
-    case close
-}
-
-enum BridgeEventParser {
-    /// Чистый парсер тела postMessage — покрыт юнит-тестами (UIKit не нужен).
-    static func parse(_ body: Any) -> BridgeEvent? {
-        guard let dict = body as? [String: Any],
-            let event = dict["event"] as? String
-        else { return nil }
-        switch event {
-        case "paywall_result":
-            return (dict["status"] as? String) == "success" ? .paymentSuccess : nil
-        case "close":
-            return .close
-        default:
-            return nil
-        }
-    }
-}
+// Разбор моста (`BridgeEvent`, `BridgeEventParser`, `BridgeMessageRouter`)
+// вынесен в FunnelEventBridge.swift — он POC-независим и покрыт юнитами,
+// здесь остаётся только UIKit-презентация.
 
 #if canImport(UIKit) && canImport(WebKit)
 /// Встроенный показ веб-пейвола в WKWebView с JS-мостом (в отличие от
@@ -148,10 +125,14 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        guard message.name == "web2app",
-            let event = BridgeEventParser.parse(message.body)
-        else { return }
-        finish(with: event)
+        guard message.name == "web2app" else { return }
+        // Шрам Б-1: раньше тут стоял `finish(with:)` на ЛЮБОМ распознанном
+        // событии — с приходом событий квиза воронка схлопнулась бы на первом
+        // экране. Теперь показ закрывает только терминальное событие (их ровно
+        // два), а остальные лишь доезжают до слушателя интегратора.
+        BridgeMessageRouter.route(message.body) { [weak self] terminal in
+            self?.finish(with: terminal)
+        }
     }
 
     private func finish(with event: BridgeEvent?) {

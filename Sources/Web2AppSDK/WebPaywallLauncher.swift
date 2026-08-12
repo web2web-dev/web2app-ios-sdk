@@ -20,9 +20,27 @@ import SafariServices
 /// юнит-тестами. Реальная презентация `SFSafariViewController` (iOS-only) — тонкая обвязка
 /// под `#if canImport(UIKit)`, проверяется интегратором на девайсе (built≠works, L6).
 enum WebPaywallLauncher {
-    /// Чистая сборка app-origin URL: добавляет `origin=app` + опц. `email` + `guid`,
-    /// СОХРАНЯЯ любой существующий query исходного URL пейвола.
-    static func appOriginURL(paywallURL: URL, email: String?, guid: String) -> URL {
+    /// Б-3 — имена query-параметров profile-id подписочных платформ. Это КОНТРАКТ с вебом:
+    /// ровно эти два имени читает `frontend/src/utils/providerProfileLink.ts`, который сам
+    /// связывает профиль с guid на сервере. Переименование = тихий разрыв связывания.
+    private static let paramAdaptyProfileId = "adapty_profile_id"
+    private static let paramRevenuecatProfileId = "revenuecat_profile_id"
+
+    /// Чистая сборка app-origin URL: добавляет `origin=app` + опц. `email` + `guid`
+    /// + опц. profile-id Adapty/RevenueCat, СОХРАНЯЯ любой существующий query
+    /// исходного URL пейвола.
+    ///
+    /// Единственная точка сборки URL: profile-id добавляются ЗДЕСЬ, через
+    /// `URLComponents`, а не конкатенацией строк в вызывающем коде — иначе теряется
+    /// и сохранение исходного query, и экранирование значений.
+    /// Пустая строка = «не передали»: `adapty_profile_id=` слать нельзя.
+    static func appOriginURL(
+        paywallURL: URL,
+        email: String?,
+        guid: String,
+        adaptyProfileId: String? = nil,
+        revenuecatProfileId: String? = nil
+    ) -> URL {
         var comps =
             URLComponents(url: paywallURL, resolvingAgainstBaseURL: false) ?? URLComponents()
         var items = comps.queryItems ?? []
@@ -31,6 +49,14 @@ enum WebPaywallLauncher {
             items.append(URLQueryItem(name: "email", value: email))
         }
         items.append(URLQueryItem(name: "guid", value: guid))
+        if let adaptyProfileId, !adaptyProfileId.isEmpty {
+            items.append(
+                URLQueryItem(name: paramAdaptyProfileId, value: adaptyProfileId))
+        }
+        if let revenuecatProfileId, !revenuecatProfileId.isEmpty {
+            items.append(
+                URLQueryItem(name: paramRevenuecatProfileId, value: revenuecatProfileId))
+        }
         comps.queryItems = items
         return comps.url ?? paywallURL
     }
