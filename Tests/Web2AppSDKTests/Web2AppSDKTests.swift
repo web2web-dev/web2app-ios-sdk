@@ -155,6 +155,46 @@ extension Web2AppSDKTests {
     }
 }
 
+// MARK: - Разбор ответа /public/handoff/resolve (guid в обёртке API)
+
+extension Web2AppSDKTests {
+    /// Реальный прод-ответ: guid лежит внутри `data` обёртки `{success, data}`.
+    func testParseGuidResponseWrappedBody() {
+        let json = #"{"success":true,"data":{"guid":"live-sdk-check-3","projectId":"b6bb21dd"}}"#
+        XCTAssertEqual(
+            AttributionResolver.parseGuidResponse(Data(json.utf8)), "live-sdk-check-3"
+        )
+    }
+
+    /// Плоское тело `{guid}` продолжает работать (старые/иные окружения).
+    func testParseGuidResponseFlatBody() {
+        let json = #"{"guid":"g-flat"}"#
+        XCTAssertEqual(AttributionResolver.parseGuidResponse(Data(json.utf8)), "g-flat")
+    }
+
+    /// Тело ошибки 404 (код не найден / просрочен / использован) → nil → .resolveFailed.
+    func testParseGuidResponseErrorBody() {
+        let json = #"{"message":"Handoff code not found","error":"Not Found","statusCode":404}"#
+        XCTAssertNil(AttributionResolver.parseGuidResponse(Data(json.utf8)))
+    }
+
+    /// Мусор, пустое тело и обёртка без guid → nil.
+    func testParseGuidResponseGarbage() {
+        XCTAssertNil(AttributionResolver.parseGuidResponse(Data("not json".utf8)))
+        XCTAssertNil(AttributionResolver.parseGuidResponse(Data()))
+        XCTAssertNil(AttributionResolver.parseGuidResponse(Data("{}".utf8)))
+        XCTAssertNil(AttributionResolver.parseGuidResponse(Data(#"{"success":true,"data":{}}"#.utf8)))
+    }
+
+    /// Пустой guid — не успех (и в обёртке, и в плоском теле).
+    func testParseGuidResponseEmptyGuid() {
+        XCTAssertNil(
+            AttributionResolver.parseGuidResponse(Data(#"{"success":true,"data":{"guid":""}}"#.utf8))
+        )
+        XCTAssertNil(AttributionResolver.parseGuidResponse(Data(#"{"guid":""}"#.utf8)))
+    }
+}
+
 // MARK: - JS-мост WebView-режима (0.4.0)
 
 extension Web2AppSDKTests {

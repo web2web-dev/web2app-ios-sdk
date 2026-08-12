@@ -25,6 +25,11 @@ struct AttributionResolver {
     let config: Web2AppConfig
 
     /// carrier-token → guid: `GET /public/handoff/resolve?code=<token>` (стабильный, WEB-433).
+    ///
+    /// Контракт ответа (проверено живым запросом к проду): успех = 200 с ОБЁРТКОЙ
+    /// `{"success":true,"data":{"guid":"…","projectId":"…"}}`; неуспех (не найден / просрочен /
+    /// уже использован) = 404 `{"message":…,"error":…,"statusCode":404}`. Плоское `{"guid":…}`
+    /// поддерживаем на совместимость со старыми/иными окружениями — см. `parseGuidResponse`.
     func resolveToken(_ token: String, completion: @escaping (Result<String, Web2AppError>) -> Void) {
         var comps = URLComponents(
             url: config.baseUrl.appendingPathComponent("public/handoff/resolve"),
@@ -57,7 +62,25 @@ struct AttributionResolver {
         }.resume()
     }
 
-    private struct GuidResponse: Decodable { let guid: String }
+    /// Успешное тело в обёртке API: `{"success":true,"data":{"guid":…}}`.
+    private struct GuidEnvelope: Decodable {
+        struct Payload: Decodable { let guid: String }
+        let data: Payload
+    }
+
+    /// Плоское тело `{"guid":…}` — совместимость со старыми/иными окружениями.
+    private struct FlatGuidResponse: Decodable { let guid: String }
+
+    /// Достаёт guid из тела ответа resolve: сперва обёртка `{data:{guid}}`, затем плоское
+    /// `{guid}`. Тело ошибки, мусор, пустые данные и пустой guid → `nil` (наружу `.resolveFailed`).
+    /// Internal (не публичный API) — точка для юнит-тестов разбора.
+    static func parseGuidResponse(_ data: Data) -> String? {
+        let decoder = JSONDecoder()
+        let guid = (try? decoder.decode(GuidEnvelope.self, from: data))?.data.guid
+            ?? (try? decoder.decode(FlatGuidResponse.self, from: data))?.guid
+        guard let guid, !guid.isEmpty else { return nil }
+        return guid
+    }
 
     private static func fetchGuid(
         url: URL,
@@ -73,12 +96,10 @@ struct AttributionResolver {
         }
         URLSession.shared.dataTask(with: req) { data, _, err in
             if let err { return completion(.failure(.network(err.localizedDescription))) }
-            guard
-                let data,
-                let decoded = try? JSONDecoder().decode(GuidResponse.self, from: data),
-                !decoded.guid.isEmpty
-            else { return completion(.failure(.resolveFailed)) }
-            completion(.success(decoded.guid))
+            guard let data, let guid = parseGuidResponse(data) else {
+                return completion(.failure(.resolveFailed))
+            }
+            completion(.success(guid))
         }.resume()
     }
 }
