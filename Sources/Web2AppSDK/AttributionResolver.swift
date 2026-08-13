@@ -1,10 +1,16 @@
 import Foundation
 
-/// Резолв `guid` из carrier-token (deep_link_value / Install Referrer) или email.
+/// Резолв `guid` из carrier-token (атрибуционный диплинк / Install Referrer) или email.
 ///
-/// ⚠ **POC-1 boundary:** SDK НЕ парсит внутренности MMP-SDK — интегратор передаёт готовый
-/// `deep_link_value` из СВОЕГО AppsFlyer/Adjust callback в `Web2App.identify(deepLinkValue:)`.
-/// POC-1 подтверждает, что MMP реально ДОСТАВЛЯЕТ `deep_link_value` на реальном iOS-девайсе
+/// ⚠ **Где лежит токен.** В ссылке, которую строит наш бэкенд, `deep_link_value` — это
+/// КОНСТАНТА `handoff` (нейтральный UDL-роут, без полезной нагрузки), а сам опознавательный
+/// токен лежит в **`deep_link_sub1`** и продублирован в **`af_sub1`** (Push API отбрасывает
+/// произвольные имена параметров, но сохраняет `af_sub1..5`). Кто прочитает
+/// `deep_link_value`, получит строку `handoff` — и опознание молча сломается.
+///
+/// ⚠ **POC-1 boundary:** SDK НЕ парсит внутренности MMP-SDK — интегратор сам достаёт токен
+/// из СВОЕГО AppsFlyer/Adjust callback и отдаёт его в `Web2App.identify(deepLinkValue:)`.
+/// POC-1 подтверждает, что MMP реально ДОСТАВЛЯЕТ этот токен на реальном iOS-девайсе
 /// (adjust/ios_sdk#752, iOS17/18). До POC iOS-ветка ship-blocked — но код резолва токена
 /// (ниже) POC-независим: как только token на руках, резолв в guid стабилен.
 ///
@@ -12,9 +18,11 @@ import Foundation
 /// ```swift
 /// // AppsFlyer:
 /// func onConversionDataSuccess(_ data: [AnyHashable: Any]) {
+///     // токен в deep_link_sub1; af_sub1 — запасной слот того же значения
+///     let token = (data["deep_link_sub1"] as? String) ?? (data["af_sub1"] as? String)
 ///     guard (data["af_status"] as? String) == "Non-organic",
 ///           (data["is_first_launch"] as? Bool) == true,
-///           let token = data["deep_link_value"] as? String else {
+///           let token, !token.isEmpty else {
 ///         Web2App.identify(deepLinkValue: nil) { ... } // → email-fallback
 ///         return
 ///     }

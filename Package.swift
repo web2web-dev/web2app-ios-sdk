@@ -2,8 +2,9 @@
 import PackageDescription
 
 /// web2app SDK (скелет, WEB-434). Тонкий SDK, MIT. iOS 14+.
-/// MMP-адаптеры (AppsFlyer/Adjust) НЕ хардовая зависимость — интегратор передаёт
-/// deep_link_value из СВОЕГО MMP-SDK в `Web2App.identify(deepLinkValue:)`.
+/// MMP-адаптеры (AppsFlyer/Adjust) НЕ хардовая зависимость — интегратор достаёт
+/// токен из колбэка СВОЕГО MMP-SDK (у AppsFlyer он лежит в `deep_link_sub1`,
+/// НЕ в `deep_link_value`) и передаёт в `Web2App.identify(deepLinkValue:)`.
 let package = Package(
     name: "Web2AppSDK",
     platforms: [.iOS(.v14)],
