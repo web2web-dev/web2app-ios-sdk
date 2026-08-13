@@ -109,12 +109,29 @@ public enum Web2App {
         }
 
         guard let token = deepLinkValue, !token.isEmpty else {
-            // Промах MMP/referrer → caller обязан вызвать resolveEmail(...) (email-fallback).
-            SdkLogger.log(
-                "identify.needs_email_fallback",
-                "MMP-токен пуст — нужен email-экран",
-                level: "warn")
-            return completion(.failure(.needsEmailFallback))
+            // WEB-1213: промах MMP/referrer → СНАЧАЛА пробуем опознание по
+            // отпечатку устройства (веб-страница оставила сигналы в момент
+            // ухода в стор). Совпадение уверенное и единственное → guid наш;
+            // любой промах → прежний email-фолбэк, поведение не хуже старого.
+            SdkLogger.log("identify.fingerprint_attempt")
+            FingerprintResolver(config: config).resolve { guid, matchMethod in
+                if let guid {
+                    guidStore.save(guid)
+                    SdkLogger.shared.setGuid(guid)
+                    SdkLogger.log(
+                        "identify.fingerprint_matched",
+                        context: ["matchMethod": matchMethod ?? "unknown"])
+                    AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
+                    completion(.success(guid))
+                } else {
+                    SdkLogger.log(
+                        "identify.needs_email_fallback",
+                        "ни MMP-токена, ни совпадения отпечатка — нужен email-экран",
+                        level: "warn")
+                    completion(.failure(.needsEmailFallback))
+                }
+            }
+            return
         }
 
         SdkLogger.log("identify.resolving_token")

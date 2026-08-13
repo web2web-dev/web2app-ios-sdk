@@ -21,7 +21,7 @@ final class SdkLogger {
     static let shared = SdkLogger()
 
     /// Версия SDK — уезжает в каждую пачку журнала.
-    static let sdkVersion = "0.6.0"
+    static let sdkVersion = "0.7.0"
 
     /// Серийная очередь — единственный владелец мутируемого состояния ниже.
     private let queue = DispatchQueue(label: "com.web2app.sdk-logger")

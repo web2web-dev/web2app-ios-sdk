@@ -5,6 +5,22 @@
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-13
+
+### Added
+- **Бесшовное опознание по отпечатку устройства (WEB-1213).** `identify(deepLinkValue: nil)`
+  перед email-фолбэком пробует получить guid по отпечатку: приложение отправляет
+  сигналы устройства (версия iOS, модель через uname, экран в логических пунктах,
+  таймзона, язык) на `POST /public/handoff/resolve-by-fingerprint`; сервер отвечает
+  guid только при **единственном уверенном совпадении** с сигналами, которые
+  веб-страница оставила в момент ухода покупателя в App Store. Любой промах —
+  прежний email-фолбэк, поведение не хуже старого. Закрывает единственный
+  небесшовный сценарий: iOS + установка после оплаты + без MMP-трекера
+  (Universal Link установку не переживает, Install Referrer у Apple нет).
+  Никаких IDFA/IDFV/ATT; сигналы не входят в required-reason API.
+  В журнале SDK видно: `identify.fingerprint_attempt` → `identify.fingerprint_matched`
+  (с `matchMethod`) или `identify.fingerprint_no_match`.
+
 ## [0.6.0] — 2026-08-13
 
 ### Added
