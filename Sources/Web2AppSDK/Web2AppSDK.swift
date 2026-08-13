@@ -59,6 +59,11 @@ public enum Web2App {
     /// Если мы уже на главном (штатный путь `WKScriptMessageHandler`) — зовём
     /// синхронно, чтобы не переставлять события местами.
     static func emitFunnelEvent(_ name: String, _ data: FunnelEventData) {
+        var ctx: [String: String] = [:]
+        if let screenId = data.screenId { ctx["screenId"] = screenId }
+        if let screenIndex = data.screenIndex { ctx["screenIndex"] = String(screenIndex) }
+        if let blockType = data.blockType { ctx["blockType"] = blockType }
+        SdkLogger.log("funnel.\(name)", context: ctx)
         funnelEventLock.lock()
         let listener = funnelEventListener
         funnelEventLock.unlock()
@@ -74,7 +79,11 @@ public enum Web2App {
 
     /// Инициализация. `projectId` = ключ проекта арендатора; `baseUrl` = наш API.
     public static func configure(projectId: String, baseUrl: URL) {
-        config = Web2AppConfig(projectId: projectId, baseUrl: baseUrl)
+        let cfg = Web2AppConfig(projectId: projectId, baseUrl: baseUrl)
+        config = cfg
+        SdkLogger.shared.attach(cfg)
+        if let existing = guidStore.load() { SdkLogger.shared.setGuid(existing) }
+        SdkLogger.log("configure", context: ["baseUrl": baseUrl.absoluteString])
     }
 
     // MARK: identify (guid-резолв первого запуска)
@@ -88,24 +97,37 @@ public enum Web2App {
         deepLinkValue: String?,
         completion: @escaping (Result<String, Web2AppError>) -> Void
     ) {
-        guard let config else { return completion(.failure(.notConfigured)) }
+        guard let config else {
+            SdkLogger.error("identify.not_configured")
+            return completion(.failure(.notConfigured))
+        }
 
         if let existing = guidStore.load() {
+            SdkLogger.shared.setGuid(existing)
+            SdkLogger.log("identify.cached_guid")
             return completion(.success(existing))
         }
 
         guard let token = deepLinkValue, !token.isEmpty else {
             // Промах MMP/referrer → caller обязан вызвать resolveEmail(...) (email-fallback).
+            SdkLogger.log(
+                "identify.needs_email_fallback",
+                "MMP-токен пуст — нужен email-экран",
+                level: "warn")
             return completion(.failure(.needsEmailFallback))
         }
 
+        SdkLogger.log("identify.resolving_token")
         AttributionResolver(config: config).resolveToken(token) { result in
             switch result {
             case .success(let guid):
                 guidStore.save(guid)
+                SdkLogger.shared.setGuid(guid)
+                SdkLogger.log("identify.resolved")
                 AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
                 completion(.success(guid))
             case .failure(let err):
+                SdkLogger.error("identify.resolve_failed", String(describing: err))
                 completion(.failure(err))
             }
         }
@@ -120,8 +142,21 @@ public enum Web2App {
         _ email: String,
         completion: @escaping (Result<Void, Web2AppError>) -> Void
     ) {
-        guard let config else { return completion(.failure(.notConfigured)) }
-        AttributionResolver(config: config).requestEmailRecovery(email, completion: completion)
+        guard let config else {
+            SdkLogger.error("email_recovery.not_configured")
+            return completion(.failure(.notConfigured))
+        }
+        // PII: сам email в журнал сознательно не пишется.
+        SdkLogger.log("email_recovery.requested")
+        AttributionResolver(config: config).requestEmailRecovery(email) { result in
+            switch result {
+            case .success:
+                SdkLogger.log("email_recovery.sent")
+            case .failure(let err):
+                SdkLogger.error("email_recovery.failed", String(describing: err))
+            }
+            completion(result)
+        }
     }
 
     // MARK: entitlement (R1 passthrough)
@@ -130,8 +165,19 @@ public enum Web2App {
     public static func entitlement(
         completion: @escaping (EntitlementGrant?) -> Void
     ) {
-        guard let config, let guid = guidStore.load() else { return completion(nil) }
-        EntitlementClient(config: config).fetch(guid: guid, completion: completion)
+        guard let config, let guid = guidStore.load() else {
+            SdkLogger.log(
+                "entitlement.skipped", "нет configure или сохранённого guid",
+                level: "warn")
+            return completion(nil)
+        }
+        SdkLogger.log("entitlement.fetch")
+        EntitlementClient(config: config).fetch(guid: guid) { grant in
+            SdkLogger.log(
+                "entitlement.result",
+                context: ["status": grant?.status ?? "none"])
+            completion(grant)
+        }
     }
 
     /// Текущий guid (если резолвлен). Client-held ключ — можно отдать хосту.
@@ -172,18 +218,30 @@ public enum Web2App {
         revenuecatProfileId: String? = nil,
         completion: @escaping (EntitlementGrant?) -> Void
     ) {
-        guard let config else { return completion(nil) }
+        guard let config else {
+            SdkLogger.error("paywall.not_configured")
+            return completion(nil)
+        }
 
         // guid-поллинг: берём client-held guid или чеканим новый (как web-visitorId),
         // персистим — grant на вебе ляжет на него, по нему же поллим entitlement.
         let guid = guidStore.load() ?? UUID().uuidString
         guidStore.save(guid)
+        SdkLogger.shared.setGuid(guid)
         let url = WebPaywallLauncher.appOriginURL(
             paywallURL: paywallURL,
             email: email,
             guid: guid,
             adaptyProfileId: adaptyProfileId,
             revenuecatProfileId: revenuecatProfileId)
+        SdkLogger.log(
+            "paywall.open_safari",
+            context: [
+                "host": paywallURL.host ?? "",
+                "hasEmail": String(email?.isEmpty == false),
+                "hasAdaptyId": String(adaptyProfileId?.isEmpty == false),
+                "hasRevenuecatId": String(revenuecatProfileId?.isEmpty == false),
+            ])
 
         #if canImport(UIKit) && canImport(SafariServices)
         let client = EntitlementClient(config: config)
@@ -195,15 +253,21 @@ public enum Web2App {
         WebPaywallPresenter.present(url: url) {
             // Браузер закрыт → поллим право по нашему guid (Adapty getProfile-стиль):
             // 30 попыток × 2с ≈ 60с окна, покрывает Stripe webhook→grant задержку.
+            SdkLogger.log("paywall.browser_closed")
             WebPaywallLauncher.pollForActiveGrant(
                 interval: 2.0,
                 maxAttempts: 30,
-                fetch: { cb in client.fetch(guid: guid, completion: cb) },
-                completion: completeOnMain
-            )
+                fetch: { cb in client.fetch(guid: guid, completion: cb) }
+            ) { grant in
+                SdkLogger.log(
+                    "paywall.poll_result",
+                    context: ["active": String(grant != nil)])
+                completeOnMain(grant)
+            }
         }
         #else
         // Не-UIKit платформа (напр. macOS юнит-тесты): презентации нет — no-op.
+        SdkLogger.log("paywall.unavailable_platform", level: "warn")
         completion(nil)
         #endif
     }
@@ -221,15 +285,23 @@ public enum Web2App {
         revenuecatProfileId: String? = nil,
         completion: @escaping (EntitlementGrant?) -> Void
     ) {
-        guard let config else { return completion(nil) }
+        guard let config else {
+            SdkLogger.error("paywall.not_configured")
+            return completion(nil)
+        }
+        SdkLogger.log("paywall.resolve_url", context: ["paywallId": paywallId])
         let resolveUrl = config.baseUrl
             .appendingPathComponent("public/paywall-url")
             .appendingPathComponent(paywallId)
-        URLSession.shared.dataTask(with: resolveUrl) { data, _, _ in
+        URLSession.shared.dataTask(with: resolveUrl) { data, resp, _ in
             guard
                 let data,
                 let paywallURL = WebPaywallLauncher.parsePaywallUrlResponse(data)
             else {
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                SdkLogger.error(
+                    "paywall.resolve_url_failed",
+                    context: ["paywallId": paywallId, "http": String(code)])
                 DispatchQueue.main.async { completion(nil) }
                 return
             }
@@ -271,15 +343,27 @@ public enum Web2App {
         revenuecatProfileId: String? = nil,
         completion: @escaping (PaywallResult) -> Void
     ) {
-        guard let config else { return completion(.unavailable) }
+        guard let config else {
+            SdkLogger.error("paywall.not_configured")
+            return completion(.unavailable)
+        }
         let guid = guidStore.load() ?? UUID().uuidString
         guidStore.save(guid)
+        SdkLogger.shared.setGuid(guid)
         let url = WebPaywallLauncher.appOriginURL(
             paywallURL: paywallURL,
             email: email,
             guid: guid,
             adaptyProfileId: adaptyProfileId,
             revenuecatProfileId: revenuecatProfileId)
+        SdkLogger.log(
+            "paywall.open_embedded",
+            context: [
+                "host": paywallURL.host ?? "",
+                "hasEmail": String(email?.isEmpty == false),
+                "hasAdaptyId": String(adaptyProfileId?.isEmpty == false),
+                "hasRevenuecatId": String(revenuecatProfileId?.isEmpty == false),
+            ])
 
         #if canImport(UIKit) && canImport(WebKit)
         let client = EntitlementClient(config: config)
@@ -292,6 +376,9 @@ public enum Web2App {
             // короткий поллинг добирает его. Закрытие без успеха — окно шире
             // (ревью 0.4.1): юзер мог оплатить и закрыть до прихода
             // мост-события; 2с давали false-negative «notPaid» оплатившему.
+            SdkLogger.log(
+                "paywall.webview_closed",
+                context: ["bridgeEvent": event.map { String(describing: $0) } ?? "none"])
             let attempts = 10
             WebPaywallLauncher.pollForActiveGrant(
                 interval: 1.0,
@@ -299,13 +386,19 @@ public enum Web2App {
                 fetch: { cb in client.fetch(guid: guid, completion: cb) }
             ) { grant in
                 if let grant {
+                    SdkLogger.log("paywall.result", context: ["result": "paid"])
                     completeOnMain(.paid(grant))
                 } else {
-                    completeOnMain(event == .paymentSuccess ? .pending : .notPaid)
+                    let pending = event == .paymentSuccess
+                    SdkLogger.log(
+                        "paywall.result",
+                        context: ["result": pending ? "pending" : "notPaid"])
+                    completeOnMain(pending ? .pending : .notPaid)
                 }
             }
         }
         #else
+        SdkLogger.log("paywall.unavailable_platform", level: "warn")
         completion(.unavailable)
         #endif
     }
@@ -319,15 +412,23 @@ public enum Web2App {
         revenuecatProfileId: String? = nil,
         completion: @escaping (PaywallResult) -> Void
     ) {
-        guard let config else { return completion(.unavailable) }
+        guard let config else {
+            SdkLogger.error("paywall.not_configured")
+            return completion(.unavailable)
+        }
+        SdkLogger.log("paywall.resolve_url", context: ["paywallId": paywallId])
         let resolveUrl = config.baseUrl
             .appendingPathComponent("public/paywall-url")
             .appendingPathComponent(paywallId)
-        URLSession.shared.dataTask(with: resolveUrl) { data, _, _ in
+        URLSession.shared.dataTask(with: resolveUrl) { data, resp, _ in
             guard
                 let data,
                 let paywallURL = WebPaywallLauncher.parsePaywallUrlResponse(data)
             else {
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                SdkLogger.error(
+                    "paywall.resolve_url_failed",
+                    context: ["paywallId": paywallId, "http": String(code)])
                 DispatchQueue.main.async { completion(.unavailable) }
                 return
             }
@@ -391,15 +492,25 @@ public enum Web2App {
     ) {
         // Без configure guid не сохранить: веб связал бы прохождение с ключом,
         // который прилка тут же потеряет. Экран не показываем — это НЕ «закрыли».
-        guard config != nil else { return completion(.unavailable) }
+        guard config != nil else {
+            SdkLogger.error("quiz.not_configured")
+            return completion(.unavailable)
+        }
         let guid = guidStore.load() ?? UUID().uuidString
         guidStore.save(guid)
+        SdkLogger.shared.setGuid(guid)
         let url = QuizPresentation.quizURL(
             quizURL: quizURL,
             email: email,
             guid: guid,
             adaptyProfileId: adaptyProfileId,
             revenuecatProfileId: revenuecatProfileId)
+        SdkLogger.log(
+            "quiz.open",
+            context: [
+                "host": quizURL.host ?? "",
+                "hasEmail": String(email?.isEmpty == false),
+            ])
 
         #if canImport(UIKit) && canImport(WebKit)
         // Тот же презентер, что у пейвола — разница только в том, что делает
@@ -407,9 +518,12 @@ public enum Web2App {
         // в QuizResult, без поллинга гранта.
         WebViewPaywallPresenter.present(url: url) { event in
             let result = QuizPresentation.result(for: event)
+            SdkLogger.log(
+                "quiz.closed", context: ["result": String(describing: result)])
             DispatchQueue.main.async { completion(result) }
         }
         #else
+        SdkLogger.log("quiz.unavailable_platform", level: "warn")
         completion(.unavailable)
         #endif
     }
@@ -431,6 +545,7 @@ public enum Web2App {
     @discardableResult
     public static func handleReturnURL(_ url: URL) -> Bool {
         guard WebPaywallLauncher.isHandoffReturnURL(url) else { return false }
+        SdkLogger.log("return_url.recognized")
         #if canImport(UIKit) && canImport(SafariServices)
         WebPaywallPresenter.dismissActive()
         #endif

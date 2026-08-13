@@ -110,10 +110,12 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
         presenter.hostController = vc
 
         guard let top = Self.topViewController() else {
+            SdkLogger.error("paywall.no_ui_context")
             presenter.retained = nil
             onEvent(nil)
             return
         }
+        SdkLogger.log("paywall.presented_webview")
         top.present(vc, animated: true)
     }
 

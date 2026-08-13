@@ -35,11 +35,20 @@ struct EntitlementClient {
         comps?.queryItems = [URLQueryItem(name: "guid", value: guid)]
         guard let url = comps?.url else { return completion(nil) }
 
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        URLSession.shared.dataTask(with: url) { data, resp, err in
+            if let err {
+                SdkLogger.error("entitlement.network_error", err.localizedDescription)
+                return completion(nil)
+            }
             guard
                 let data,
                 let decoded = try? JSONDecoder().decode(EntitlementResponse.self, from: data)
-            else { return completion(nil) }
+            else {
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                SdkLogger.error(
+                    "entitlement.decode_failed", context: ["http": String(code)])
+                return completion(nil)
+            }
             // Право = первый грант (MVP-1: level == price_id, один активный грант).
             completion(decoded.grants.first)
         }.resume()

@@ -64,8 +64,14 @@ struct AttributionResolver {
             "email": email,
         ])
         URLSession.shared.dataTask(with: req) { _, resp, err in
-            if let err { return completion(.failure(.network(err.localizedDescription))) }
+            if let err {
+                SdkLogger.error("email_recovery.network_error", err.localizedDescription)
+                return completion(.failure(.network(err.localizedDescription)))
+            }
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if !(200..<300).contains(code) {
+                SdkLogger.error("email_recovery.http_error", context: ["http": String(code)])
+            }
             completion((200..<300).contains(code) ? .success(()) : .failure(.resolveFailed))
         }.resume()
     }
@@ -102,9 +108,14 @@ struct AttributionResolver {
             req.httpBody = body
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        URLSession.shared.dataTask(with: req) { data, _, err in
-            if let err { return completion(.failure(.network(err.localizedDescription))) }
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            if let err {
+                SdkLogger.error("resolve.network_error", err.localizedDescription)
+                return completion(.failure(.network(err.localizedDescription)))
+            }
             guard let data, let guid = parseGuidResponse(data) else {
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                SdkLogger.error("resolve.failed", context: ["http": String(code)])
                 return completion(.failure(.resolveFailed))
             }
             completion(.success(guid))

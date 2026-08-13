@@ -154,11 +154,13 @@ final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate,
 
         guard let top = Self.topViewController() else {
             // Нет UI-контекста — сразу отдаём управление (прилка сама решит).
+            SdkLogger.error("paywall.no_ui_context")
             presenter.retained = nil
             onDismiss()
             return
         }
         Self.active = presenter
+        SdkLogger.log("paywall.presented_safari")
         top.present(safari, animated: true)
     }
 

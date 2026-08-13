@@ -26,7 +26,15 @@ struct AppCallbackProducer {
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         // Fire-and-forget: сбой метрики НЕ ломает пользовательский поток.
-        URLSession.shared.dataTask(with: req).resume()
+        SdkLogger.log("app_callback.sending")
+        URLSession.shared.dataTask(with: req) { _, resp, err in
+            if let err {
+                SdkLogger.error("app_callback.failed", err.localizedDescription)
+            } else {
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                SdkLogger.log("app_callback.sent", context: ["http": String(code)])
+            }
+        }.resume()
     }
 
     /// device-строка для дедуп-ключа метрики (bounded whitelist на бэке: ios|android).
