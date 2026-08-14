@@ -22,6 +22,18 @@ import UIKit
 struct FingerprintResolver {
     let config: Web2AppConfig
 
+    /// Окно попыток (WEB-1384): слепок на сервере живёт максимум 2 часа
+    /// (точный ярус) — попытки позже математически бесполезны. Зеркало
+    /// серверного TIER1_WINDOW_MS: меняется только вместе с ним.
+    static let attemptWindow: TimeInterval = 2 * 60 * 60
+
+    /// Чистая проверка окна: нет метки первой неудачи → пробовать можно;
+    /// внутри окна → можно; окно истекло → в сеть не ходить вовсе.
+    static func isWithinAttemptWindow(firstFailedAt: Date?, now: Date) -> Bool {
+        guard let firstFailedAt else { return true }
+        return now.timeIntervalSince(firstFailedAt) <= attemptWindow
+    }
+
     /// Сигналы устройства. Экран — ЛОГИЧЕСКИЕ пункты, нормализованные к
     /// «min x max» (ориентация не должна рвать матч; сервер нормализует так же).
     struct Signals {
@@ -106,6 +118,24 @@ struct FingerprintResolver {
             }
             completion(parsed.guid, parsed.matchMethod)
         }.resume()
+    }
+
+    /// Хранилище метки «первая неудачная попытка» (WEB-1384). UserDefaults,
+    /// не Keychain: метка не секрет, а после успеха ветка отпечатка
+    /// перекрывается сохранённым guid и хранилище больше не читается.
+    enum AttemptGate {
+        static let key = "web2app.fingerprint.firstFailedAt"
+
+        static func firstFailedAt() -> Date? {
+            let ts = UserDefaults.standard.double(forKey: key)
+            return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+        }
+
+        /// Пишем только ПЕРВУЮ неудачу — окно отсчитывается от неё.
+        static func markFailure(now: Date = Date()) {
+            guard firstFailedAt() == nil else { return }
+            UserDefaults.standard.set(now.timeIntervalSince1970, forKey: key)
+        }
     }
 
     /// Успех приходит обёрткой `{"success":true,"data":{"guid":…,"matchMethod":…}}`

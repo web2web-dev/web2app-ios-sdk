@@ -113,6 +113,19 @@ public enum Web2App {
             // отпечатку устройства (веб-страница оставила сигналы в момент
             // ухода в стор). Совпадение уверенное и единственное → guid наш;
             // любой промах → прежний email-фолбэк, поведение не хуже старого.
+            //
+            // WEB-1384: попытки ограничены окном 2 часа с ПЕРВОЙ неудачи —
+            // ровно столько живёт слепок на сервере; дальше в сеть не ходим
+            // никогда (лишняя работа при каждом запуске, ответ известен).
+            guard FingerprintResolver.isWithinAttemptWindow(
+                firstFailedAt: FingerprintResolver.AttemptGate.firstFailedAt(),
+                now: Date()
+            ) else {
+                SdkLogger.log(
+                    "identify.fingerprint_window_expired",
+                    "окно попыток отпечатка истекло — сразу email-экран")
+                return completion(.failure(.needsEmailFallback))
+            }
             SdkLogger.log("identify.fingerprint_attempt")
             FingerprintResolver(config: config).resolve { guid, matchMethod in
                 if let guid {
@@ -124,6 +137,7 @@ public enum Web2App {
                     AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
                     completion(.success(guid))
                 } else {
+                    FingerprintResolver.AttemptGate.markFailure()
                     SdkLogger.log(
                         "identify.needs_email_fallback",
                         "ни MMP-токена, ни совпадения отпечатка — нужен email-экран",

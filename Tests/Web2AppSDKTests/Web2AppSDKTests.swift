@@ -551,4 +551,28 @@ extension Web2AppSDKTests {
         }
         XCTAssertEqual(result, .unavailable)
     }
+
+    // MARK: - WEB-1384: окно попыток отпечатка (2 часа с первой неудачи)
+
+    /// Нет метки первой неудачи → пробовать можно.
+    func testFingerprintWindowAllowsWhenNoFailureRecorded() {
+        XCTAssertTrue(
+            FingerprintResolver.isWithinAttemptWindow(firstFailedAt: nil, now: Date()))
+    }
+
+    /// Внутри окна (10 минут после первой неудачи) → пробовать можно.
+    func testFingerprintWindowAllowsInsideTwoHours() {
+        let first = Date()
+        let now = first.addingTimeInterval(10 * 60)
+        XCTAssertTrue(
+            FingerprintResolver.isWithinAttemptWindow(firstFailedAt: first, now: now))
+    }
+
+    /// Окно истекло (2 часа + секунда) → в сеть не ходим.
+    func testFingerprintWindowBlocksAfterTwoHours() {
+        let first = Date()
+        let now = first.addingTimeInterval(2 * 60 * 60 + 1)
+        XCTAssertFalse(
+            FingerprintResolver.isWithinAttemptWindow(firstFailedAt: first, now: now))
+    }
 }
