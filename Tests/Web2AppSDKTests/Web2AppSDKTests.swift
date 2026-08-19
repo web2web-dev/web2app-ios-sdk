@@ -27,6 +27,43 @@ final class Web2AppSDKTests: XCTestCase {
         XCTAssertFalse(grant.isActive)
     }
 
+    // MARK: WEB-1166 — testMode у гранта (синтетический доступ тестового режима)
+
+    /// Синтетический грант тестового режима: testMode=true декодируется и виден интегратору.
+    func testDecodesTestModeTrueOnSyntheticGrant() throws {
+        let json = """
+        { "level": "test", "status": "active", "expires_at": null, "price_id": "test", "testMode": true }
+        """.data(using: .utf8)!
+        let grant = try JSONDecoder().decode(EntitlementGrant.self, from: json)
+        XCTAssertTrue(grant.testMode)
+        XCTAssertTrue(grant.isActive) // isActive не меняли: активен, но помечен тестовым
+    }
+
+    /// Явный testMode=false — боевой грант.
+    func testDecodesTestModeFalseExplicit() throws {
+        let json = """
+        { "level": "price_abc", "status": "active", "expires_at": null, "price_id": "price_abc", "testMode": false }
+        """.data(using: .utf8)!
+        let grant = try JSONDecoder().decode(EntitlementGrant.self, from: json)
+        XCTAssertFalse(grant.testMode)
+    }
+
+    /// Старый ответ без поля testMode — декод не ломается, testMode = false.
+    func testMissingTestModeFieldDefaultsFalse() throws {
+        let json = """
+        { "level": "price_abc", "status": "active", "expires_at": null, "price_id": "price_abc" }
+        """.data(using: .utf8)!
+        let grant = try JSONDecoder().decode(EntitlementGrant.self, from: json)
+        XCTAssertFalse(grant.testMode)
+        XCTAssertEqual(grant.priceId, "price_abc")
+    }
+
+    /// Конструктор без testMode (существующие вызовы) → false по умолчанию.
+    func testTestModeDefaultsFalseInInitializer() {
+        let grant = EntitlementGrant(level: "l", status: "active", expiresAt: nil, priceId: nil)
+        XCTAssertFalse(grant.testMode)
+    }
+
     // MARK: WEB-525 под-атом B — openWebPaywall (app-origin URL + guid-поллинг возврат)
 
     /// app-origin URL несёт origin=app + email + guid (prefill + guid-поллинг).

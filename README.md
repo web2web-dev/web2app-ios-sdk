@@ -60,6 +60,26 @@ Web2App.entitlement { grant in
 }
 ```
 
+### Тестовый режим проекта
+
+Если проект в кабинете переведён в тестовый режим, бэкенд отдаёт **синтетический**
+грант: он выглядит активным (`isActive == true`), но помечен `testMode == true`.
+Это не настоящая оплата — **не выдавайте по такому гранту боевой контент**:
+
+```swift
+Web2App.entitlement { grant in
+    guard let grant, grant.isActive else { return lock() }
+    if grant.testMode {
+        // тестовый доступ: открывайте контент только в dev/QA-сборках
+    } else {
+        // боевой доступ
+    }
+}
+```
+
+У боевых грантов поле отсутствует или `false` — SDK декодирует его как `false`,
+старые ответы без поля не ломаются.
+
 ### Где взять Project ID
 
 В веб-кабинете: **проект → Настройки → «Подключение приложения» → «Полный мост»** —
@@ -74,7 +94,7 @@ Web2App.entitlement { grant in
 | `Web2App.configure(projectId:baseUrl:)` | Инициализация SDK. Вызвать один раз при старте. |
 | `Web2App.identify(deepLinkValue:completion:)` | Опознать пользователя при первом запуске. Порядок: сохранённый `guid` → код из диплинка → **опознание по отпечатку устройства (0.7.0)** → сигнал «нужен email». |
 | `Web2App.requestEmailRecovery(_:completion:)` | Запросить восстановление по email — мы отправим пользователю ссылку-магнит. |
-| `Web2App.entitlement(completion:)` | Получить текущий доступ пользователя (`grant.isActive`, `level`, `status`, `expiresAt`). |
+| `Web2App.entitlement(completion:)` | Получить текущий доступ пользователя (`grant.isActive`, `level`, `status`, `expiresAt`, `testMode` — см. «Тестовый режим проекта»). |
 | `Web2App.currentGuid()` | Текущий идентификатор пользователя (если уже опознан). |
 | `Web2App.openWebPaywall(paywallURL:email:completion:)` | Показать веб-пейвол внутри приложения; completion вернёт активный доступ после оплаты (guid-поллинг). |
 | `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола (Safari-режим): закрывает шторку и ускоряет получение доступа. |
