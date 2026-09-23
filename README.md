@@ -32,7 +32,7 @@ import Web2AppSDK
 // 1. Инициализация — один раз при старте приложения.
 Web2App.configure(
     projectId: "ВАШ_PROJECT_ID",                          // берётся в кабинете проекта
-    baseUrl: URL(string: "https://api.testfunnelsdev.click")!
+    baseUrl: URL(string: "https://api.subster.ai")!
 )
 
 // 2. Идентификация пользователя при первом запуске.

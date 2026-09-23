@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+- **README: адрес API в примере `configure` — `https://api.subster.ai`** (переезд
+  с `api.testfunnelsdev.click`, старый домен будет отключён). Код SDK не менялся.
+
 ## [0.7.1] — 2026-08-14
 
 ### Changed
