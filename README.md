@@ -184,6 +184,43 @@ Web2App.openQuizEmbedded(quizURL: URL(string: "https://client.example.com/q/quiz
 бэкенде нет (он существует только для пейволов), поэтому открытия квиза по ID в
 SDK нет.
 
+### Мгновенный показ пейвола: предзагрузка (0.8.0)
+
+Без предзагрузки `openWebPaywallEmbedded(paywallId:)` при каждом показе
+запрашивает URL и грузит страницу, и какое-то время пользователь видит
+индикатор загрузки. Если вы заранее знаете, какие пейволы покажете, загрузите
+их в фоне:
+
+```swift
+// После успешного identify и получения profile-id, задолго до показа
+// (до identify guid нет, и вызов ничего не сделает):
+Web2App.preloadPaywalls(
+    paywallIds: ["pw_onboarding", "pw_settings", "pw_limit"],
+    adaptyProfileId: adaptyId,
+    revenuecatProfileId: nil)
+
+// В момент показа — те же параметры:
+Web2App.openWebPaywallEmbedded(paywallId: "pw_onboarding", adaptyProfileId: adaptyId) { result in
+    // как обычно: .paid / .notPaid / .pending / .unavailable
+}
+```
+
+- На каждый `paywallId` SDK держит отдельный фоновый WebView. При показе берёт
+  готовый, а после закрытия пейвола тихо грузит новый.
+- Готовая страница используется, только если `email` и profile-id при показе
+  **совпадают** с переданными в `preloadPaywalls`. Иначе, а также если страница
+  старше часа, не загрузилась или iOS забрала память, показ идёт обычным путём.
+- Повторный `preloadPaywalls` задаёт новый набор: лишние пейволы выгружаются.
+  При логауте вызовите `Web2App.clearPreloadedPaywalls()`.
+- Каждый фоновый WebView — отдельный процесс на десятки МБ. Держите наготове
+  только то, что реально покажете.
+
+> ⚠ Предзагруженная страница открыта с `preload=1` и **не должна засчитывать
+> просмотр**, пока её не показали. SDK сообщает о показе флагом
+> `window.__web2appShown = true` и событием `web2app:shown` на `window`
+> (событие может прийти дважды). Пока пейвол это не поддерживает, каждая
+> предзагрузка — лишний `PAYWALL_VIEW` в статистике воронки.
+
 ### Adapty / RevenueCat: передать profile-id на страницу
 
 Если подписки у вас на Adapty или RevenueCat — возьмите profile-id из их SDK

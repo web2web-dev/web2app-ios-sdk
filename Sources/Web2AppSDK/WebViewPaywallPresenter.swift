@@ -30,17 +30,20 @@ public enum PaywallResult {
 /// SFSafariViewController, страница может слать SDK события напрямую).
 /// На успех оплаты пейвол закрывается АВТОМАТИЧЕСКИ — юзеру не нужно жать
 /// «Закрыть»; кнопка остаётся и тоже обрабатывается мостом.
-final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
+final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     private var retained: WebViewPaywallPresenter?
     private weak var hostController: UIViewController?
-    private weak var contentController: WKUserContentController?
+    private let paywall: PaywallWebView
     private let onEvent: (BridgeEvent?) -> Void
     private var finished = false
+    private weak var spinner: UIActivityIndicatorView?
+    private var loadingObservation: NSKeyValueObservation?
 
     /// Ревью 0.4.1: guard от одновременных показов (см. WebPaywallPresenter).
     private static weak var active: WebViewPaywallPresenter?
 
-    private init(onEvent: @escaping (BridgeEvent?) -> Void) {
+    private init(paywall: PaywallWebView, onEvent: @escaping (BridgeEvent?) -> Void) {
+        self.paywall = paywall
         self.onEvent = onEvent
     }
 
@@ -48,22 +51,30 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
     /// нативной кнопкой закрытия). `onEvent` вызывается РОВНО один раз:
     /// с событием моста (успех/кнопка) либо nil (юзер закрыл нативно).
     static func present(url: URL, onEvent: @escaping (BridgeEvent?) -> Void) {
+        present(paywall: PaywallWebView.make(url: url, preloaded: false), onEvent: onEvent)
+    }
+
+    /// Показ готового WebView — в т.ч. предзагруженного (`PaywallPreloader`).
+    /// Контракт `onEvent` тот же, что у `present(url:)`.
+    static func present(paywall: PaywallWebView, onEvent: @escaping (BridgeEvent?) -> Void) {
         // Ревью 0.4.1: повторный показ завершает предыдущий (его колбэк
         // отработает по обычному пути), не осиротляя completion.
         if let previous = active {
             previous.finish(with: nil)
         }
 
-        let presenter = WebViewPaywallPresenter(onEvent: onEvent)
+        let presenter = WebViewPaywallPresenter(paywall: paywall, onEvent: onEvent)
         presenter.retained = presenter // self-owning до finish
-
-        let config = WKWebViewConfiguration()
-        config.userContentController.add(presenter, name: "web2app")
-        presenter.contentController = config.userContentController
+        paywall.bridge.target = presenter
         Self.active = presenter
 
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.load(URLRequest(url: url))
+        let webView = paywall.webView
+        webView.navigationDelegate = presenter
+        if paywall.preloaded {
+            // Страница ждала показа, чтобы засчитать просмотр (см. контракт
+            // `PaywallPreload.shownScript`); не догрузилась — повтор в didFinish.
+            webView.evaluateJavaScript(PaywallPreload.shownScript)
+        }
 
         let vc = UIViewController()
         vc.view = webView
@@ -107,6 +118,29 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
             closeButton.trailingAnchor.constraint(equalTo: blur.trailingAnchor),
         ])
 
+        // Пока страница грузится — индикатор вместо белого экрана. Предзагруженная
+        // обычно уже готова, и индикатор не появится вовсе.
+        let spinner = UIActivityIndicatorView(style: .large)
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.hidesWhenStopped = true
+        webView.addSubview(spinner)
+        NSLayoutConstraint.activate([
+            spinner.centerXAnchor.constraint(equalTo: webView.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: webView.centerYAnchor),
+        ])
+        presenter.spinner = spinner
+        presenter.loadingObservation = webView.observe(\.isLoading, options: [.initial, .new]) {
+            [weak presenter] webView, _ in
+            let loading = webView.isLoading
+            DispatchQueue.main.async {
+                if loading {
+                    presenter?.spinner?.startAnimating()
+                } else {
+                    presenter?.spinner?.stopAnimating()
+                }
+            }
+        }
+
         presenter.hostController = vc
 
         guard let top = Self.topViewController() else {
@@ -115,7 +149,12 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
             onEvent(nil)
             return
         }
-        SdkLogger.log("paywall.presented_webview")
+        SdkLogger.log(
+            "paywall.presented_webview",
+            context: [
+                "preloaded": String(paywall.preloaded),
+                "loading": String(webView.isLoading),
+            ])
         top.present(vc, animated: true)
     }
 
@@ -143,7 +182,8 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
         // Ревью 0.4.1: снять script-handler явно — WKUserContentController
         // держит хендлер сильно (классический WKWebView-цикл); сегодня цикла
         // нет, но defense-in-depth дешевле будущей утечки.
-        contentController?.removeScriptMessageHandler(forName: "web2app")
+        loadingObservation = nil
+        paywall.tearDown()
         if Self.active === self { Self.active = nil }
         let controller = hostController
         let callback = onEvent
@@ -154,6 +194,20 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler {
             callback(event)
         }
         retained = nil
+    }
+
+    // MARK: WKNavigationDelegate
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if paywall.preloaded {
+            webView.evaluateJavaScript(PaywallPreload.shownScript)
+        }
+    }
+
+    /// iOS убила процесс страницы на экране — без перезагрузки юзер видит пустоту.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        SdkLogger.log("paywall.webview_process_terminated", level: "warn")
+        webView.reload()
     }
 
     private static func topViewController() -> UIViewController? {
