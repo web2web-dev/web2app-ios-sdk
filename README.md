@@ -100,10 +100,13 @@ Web2App.entitlement { grant in
 | `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола (Safari-режим): закрывает шторку и ускоряет получение доступа. |
 | `Web2App.openWebPaywall(paywallId:email:completion:)` | Открыть пейвол по его ID — публичный URL резолвится автоматически. |
 | `Web2App.openWebPaywallEmbedded(paywallURL:/paywallId:email:completion:)` | Встроенный WebView-режим: авто-закрытие при успехе оплаты, результат — типизированный `PaywallResult` (paid / notPaid / pending / unavailable). URL-схема не нужна. |
+| `Web2App.preloadPaywalls(paywallIds:email:)` | **(0.8.0)** Заранее загрузить встроенные пейволы в фоне — потом `openWebPaywallEmbedded(paywallId:)` показывает их мгновенно. Звать после `identify`. См. «Мгновенный показ пейвола». |
+| `Web2App.invalidatePreloadedPaywalls(paywallIds:)` | **(0.8.0)** Выгрузить отдельные предзагруженные пейволы, которые в этой сессии уже не покажете, — освобождает память. |
+| `Web2App.clearPreloadedPaywalls()` | **(0.8.0)** Выгрузить все предзагруженные пейволы (например, при логауте). |
 | `Web2App.openQuizEmbedded(quizURL:email:completion:)` | Показать КВИЗ встроенным WebView. Результат — `QuizResult` (закрыт страницей / пользователем / оплатой). Права не поллит. |
 | `Web2App.setFunnelEventListener(_:)` | Подписаться на события прохождения воронки из встроенного показа (`quiz_start`, `quiz_answer`, …). |
 
-У методов открытия страницы есть ещё два опциональных параметра —
+У методов открытия страницы и у `preloadPaywalls` есть ещё два опциональных параметра —
 `adaptyProfileId:` и `revenuecatProfileId:` (см. «Adapty / RevenueCat» ниже).
 
 Восстановление по email — два шага: `requestEmailRecovery(email)` отправляет пользователю
