@@ -100,10 +100,13 @@ Web2App.entitlement { grant in
 | `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола (Safari-режим): закрывает шторку и ускоряет получение доступа. |
 | `Web2App.openWebPaywall(paywallId:email:completion:)` | Открыть пейвол по его ID — публичный URL резолвится автоматически. |
 | `Web2App.openWebPaywallEmbedded(paywallURL:/paywallId:email:completion:)` | Встроенный WebView-режим: авто-закрытие при успехе оплаты, результат — типизированный `PaywallResult` (paid / notPaid / pending / unavailable). URL-схема не нужна. |
+| `Web2App.preloadPaywalls(paywallIds:email:)` | **(0.8.0)** Заранее загрузить встроенные пейволы в фоне — потом `openWebPaywallEmbedded(paywallId:)` показывает их мгновенно. Звать после `identify`. См. «Мгновенный показ пейвола». |
+| `Web2App.invalidatePreloadedPaywalls(paywallIds:)` | **(0.8.0)** Выгрузить отдельные предзагруженные пейволы, которые в этой сессии уже не покажете, — освобождает память. |
+| `Web2App.clearPreloadedPaywalls()` | **(0.8.0)** Выгрузить все предзагруженные пейволы (например, при логауте). |
 | `Web2App.openQuizEmbedded(quizURL:email:completion:)` | Показать КВИЗ встроенным WebView. Результат — `QuizResult` (закрыт страницей / пользователем / оплатой). Права не поллит. |
 | `Web2App.setFunnelEventListener(_:)` | Подписаться на события прохождения воронки из встроенного показа (`quiz_start`, `quiz_answer`, …). |
 
-У методов открытия страницы есть ещё два опциональных параметра —
+У методов открытия страницы и у `preloadPaywalls` есть ещё два опциональных параметра —
 `adaptyProfileId:` и `revenuecatProfileId:` (см. «Adapty / RevenueCat» ниже).
 
 Восстановление по email — два шага: `requestEmailRecovery(email)` отправляет пользователю
@@ -183,6 +186,46 @@ Web2App.openQuizEmbedded(quizURL: URL(string: "https://client.example.com/q/quiz
 `quizURL` — **готовый** URL опубликованного квиза. Резолва «URL квиза по ID» на
 бэкенде нет (он существует только для пейволов), поэтому открытия квиза по ID в
 SDK нет.
+
+### Мгновенный показ пейвола: предзагрузка (0.8.0)
+
+Без предзагрузки `openWebPaywallEmbedded(paywallId:)` при каждом показе
+запрашивает URL и грузит страницу, и какое-то время пользователь видит
+индикатор загрузки. Если вы заранее знаете, какие пейволы покажете, загрузите
+их в фоне:
+
+```swift
+// После успешного identify и получения profile-id, задолго до показа
+// (до identify guid нет, и вызов ничего не сделает):
+Web2App.preloadPaywalls(
+    paywallIds: ["pw_onboarding", "pw_settings", "pw_limit"],
+    adaptyProfileId: adaptyId,
+    revenuecatProfileId: nil)
+
+// В момент показа — те же параметры:
+Web2App.openWebPaywallEmbedded(paywallId: "pw_onboarding", adaptyProfileId: adaptyId) { result in
+    // как обычно: .paid / .notPaid / .pending / .unavailable
+}
+```
+
+- На каждый `paywallId` SDK держит отдельный фоновый WebView. При показе берёт
+  готовый, а после закрытия пейвола тихо грузит новый.
+- Готовая страница используется, только если `email` и profile-id при показе
+  **совпадают** с переданными в `preloadPaywalls`. Иначе, а также если страница
+  старше часа, не загрузилась или iOS забрала память, показ идёт обычным путём.
+- Повторный `preloadPaywalls` задаёт новый набор: лишние пейволы выгружаются.
+- Пейвол точно не понадобится в этой сессии — выгрузите его, чтобы не держать
+  WebView в памяти: `Web2App.invalidatePreloadedPaywalls(paywallIds: ["pw_limit"])`.
+  Остальные останутся наготове; показ по этому ID будет работать, но с загрузкой.
+- При логауте вызовите `Web2App.clearPreloadedPaywalls()` — выгрузит всё.
+- Каждый фоновый WebView — отдельный процесс на десятки МБ. Держите наготове
+  только то, что реально покажете.
+
+> ⚠ Предзагруженная страница открыта с `preload=1` и **не должна засчитывать
+> просмотр**, пока её не показали. SDK сообщает о показе флагом
+> `window.__web2appShown = true` и событием `web2app:shown` на `window`
+> (событие может прийти дважды). Пока пейвол это не поддерживает, каждая
+> предзагрузка — лишний `PAYWALL_VIEW` в статистике воронки.
 
 ### Adapty / RevenueCat: передать profile-id на страницу
 
