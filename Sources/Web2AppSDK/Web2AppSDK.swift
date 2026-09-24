@@ -599,6 +599,20 @@ public enum Web2App {
         #endif
     }
 
+    /// Выгрузить конкретные предзагруженные пейволы — например, приложение
+    /// знает, что в этой сессии их уже не покажет, и не хочет держать WebView
+    /// в памяти. Пейвол убирается из набора предзагрузки: после показа он не
+    /// пересоздаётся, остальные пейволы остаются наготове. Показ по такому
+    /// `paywallId` по-прежнему работает — обычным путём, с загрузкой. Вернуть
+    /// его в набор можно новым `preloadPaywalls`.
+    public static func invalidatePreloadedPaywalls(paywallIds: [String]) {
+        SdkLogger.log("paywall.preload_invalidate", context: ["count": String(paywallIds.count)])
+        #if canImport(UIKit) && canImport(WebKit)
+        let run = { PaywallPreloader.shared.invalidate(paywallIds: paywallIds) }
+        if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+        #endif
+    }
+
     /// Выгрузить все предзагруженные пейволы (например, при логауте: страницы
     /// загружены с email / profile-id прежнего пользователя).
     public static func clearPreloadedPaywalls() {

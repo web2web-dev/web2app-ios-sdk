@@ -209,6 +209,15 @@ final class PaywallPreloader: NSObject, WKNavigationDelegate {
         load(paywallId, params: params, resolve: resolve)
     }
 
+    /// Больше не держать эти пейволы: WebView выгружается, после показа не
+    /// пересоздаётся. Остальной набор предзагрузки не трогается.
+    func invalidate(paywallIds: [String]) {
+        for id in paywallIds {
+            requested[id] = nil
+            drop(id)
+        }
+    }
+
     func clear() {
         requested.removeAll()
         dropAllEntries()

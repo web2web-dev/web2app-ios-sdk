@@ -211,7 +211,10 @@ Web2App.openWebPaywallEmbedded(paywallId: "pw_onboarding", adaptyProfileId: adap
   **совпадают** с переданными в `preloadPaywalls`. Иначе, а также если страница
   старше часа, не загрузилась или iOS забрала память, показ идёт обычным путём.
 - Повторный `preloadPaywalls` задаёт новый набор: лишние пейволы выгружаются.
-  При логауте вызовите `Web2App.clearPreloadedPaywalls()`.
+- Пейвол точно не понадобится в этой сессии — выгрузите его, чтобы не держать
+  WebView в памяти: `Web2App.invalidatePreloadedPaywalls(paywallIds: ["pw_limit"])`.
+  Остальные останутся наготове; показ по этому ID будет работать, но с загрузкой.
+- При логауте вызовите `Web2App.clearPreloadedPaywalls()` — выгрузит всё.
 - Каждый фоновый WebView — отдельный процесс на десятки МБ. Держите наготове
   только то, что реально покажете.
 
