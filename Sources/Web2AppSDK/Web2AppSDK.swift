@@ -473,7 +473,22 @@ public enum Web2App {
                 email: email,
                 adaptyProfileId: adaptyProfileId,
                 revenuecatProfileId: revenuecatProfileId)
-            if let paywall = PaywallPreloader.shared.take(paywallId: paywallId, params: params) {
+            // Кэш предзагрузки и показ — только главный поток (как у
+            // preloadPaywalls/invalidate/clear): метод по-прежнему можно звать
+            // из любого потока. Промах кэша — обычный путь, как раньше.
+            let run: () -> Void = {
+                guard
+                    let paywall = PaywallPreloader.shared.take(
+                        paywallId: paywallId, params: params)
+                else {
+                    return openEmbeddedResolvingURL(
+                        config: config,
+                        paywallId: paywallId,
+                        email: email,
+                        adaptyProfileId: adaptyProfileId,
+                        revenuecatProfileId: revenuecatProfileId,
+                        completion: completion)
+                }
                 SdkLogger.shared.setGuid(guid)
                 SdkLogger.log("paywall.open_embedded_preloaded", context: ["paywallId": paywallId])
                 runEmbeddedPaywall(
@@ -488,11 +503,31 @@ public enum Web2App {
                     present: { onEvent in
                         WebViewPaywallPresenter.present(paywall: paywall, onEvent: onEvent)
                     })
-                return
             }
+            if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+            return
         }
         #endif
 
+        openEmbeddedResolvingURL(
+            config: config,
+            paywallId: paywallId,
+            email: email,
+            adaptyProfileId: adaptyProfileId,
+            revenuecatProfileId: revenuecatProfileId,
+            completion: completion)
+    }
+
+    /// Обычный путь `openWebPaywallEmbedded(paywallId:)`: резолв URL по сети,
+    /// затем показ на главном потоке. Можно звать из любого потока.
+    private static func openEmbeddedResolvingURL(
+        config: Web2AppConfig,
+        paywallId: String,
+        email: String?,
+        adaptyProfileId: String?,
+        revenuecatProfileId: String?,
+        completion: @escaping (PaywallResult) -> Void
+    ) {
         resolvePaywallURL(config: config, paywallId: paywallId) { paywallURL in
             DispatchQueue.main.async {
                 guard let paywallURL else { return completion(.unavailable) }
