@@ -70,11 +70,6 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler, WKNavigat
 
         let webView = paywall.webView
         webView.navigationDelegate = presenter
-        if paywall.preloaded {
-            // Страница ждала показа, чтобы засчитать просмотр (см. контракт
-            // `PaywallPreload.shownScript`); не догрузилась — повтор в didFinish.
-            webView.evaluateJavaScript(PaywallPreload.shownScript)
-        }
 
         let vc = UIViewController()
         vc.view = webView
@@ -145,9 +140,20 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler, WKNavigat
 
         guard let top = Self.topViewController() else {
             SdkLogger.error("paywall.no_ui_context")
+            // Показать некуда — сигнал «показано» странице НЕ уходит (иначе
+            // засчитала бы просмотр, которого не было). Хендлер моста снимаем,
+            // как в finish(): WebView больше никто не покажет.
+            presenter.loadingObservation = nil
+            paywall.tearDown()
             presenter.retained = nil
             onEvent(nil)
             return
+        }
+        if paywall.preloaded {
+            // Страница ждала показа, чтобы засчитать просмотр (см. контракт
+            // `PaywallPreload.shownScript`); не догрузилась — повтор в didFinish.
+            // Только после проверки, что есть куда показывать.
+            webView.evaluateJavaScript(PaywallPreload.shownScript)
         }
         SdkLogger.log(
             "paywall.presented_webview",
