@@ -598,7 +598,7 @@ public enum Web2App {
     ///
     /// Если `identify` вернул `needsEmailFallback`, guid ещё нет и вызов молча
     /// ничего не сделает (`paywall.preload_no_guid`) — позовите его снова, когда
-    /// `Web2App.currentGuid()` станет не nil. После успешной оплаты предзагрузка
+    /// `Web2App.currentGuid()` станет не nil. После каждого показа (с любым исходом) предзагрузка
     /// этого пейвола запускается снова — не нужен, `invalidatePreloadedPaywalls`.
     ///
     /// Каждый инстанс — отдельный WebView-процесс (десятки МБ): держите наготове

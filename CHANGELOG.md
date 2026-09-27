@@ -23,7 +23,7 @@
   завышает.
 - Без guid (`identify` вернул `needsEmailFallback`) `preloadPaywalls` ничего не
   делает (`paywall.preload_no_guid`) — позовите снова, когда
-  `Web2App.currentGuid()` станет не nil. После успешной оплаты предзагрузка
+  `Web2App.currentGuid()` станет не nil. После каждого показа (с любым исходом) предзагрузка
   пейвола запускается снова; не нужен — `invalidatePreloadedPaywalls`.
 
 ### Changed
