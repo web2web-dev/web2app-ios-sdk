@@ -397,12 +397,31 @@ public enum Web2App {
             ])
 
         #if canImport(UIKit) && canImport(WebKit)
+        runEmbeddedPaywall(config: config, guid: guid, completion: completion) { onEvent in
+            WebViewPaywallPresenter.present(url: url, onEvent: onEvent)
+        }
+        #else
+        SdkLogger.log("paywall.unavailable_platform", level: "warn")
+        completion(.unavailable)
+        #endif
+    }
+
+    #if canImport(UIKit) && canImport(WebKit)
+    /// Общая часть встроенного показа: показ → закрытие → поллинг гранта →
+    /// `PaywallResult`. Показ «с нуля» и показ предзагруженного отличаются только
+    /// тем, какой WebView выводится (`present`).
+    private static func runEmbeddedPaywall(
+        config: Web2AppConfig,
+        guid: String,
+        completion: @escaping (PaywallResult) -> Void,
+        present: (@escaping (BridgeEvent?) -> Void) -> Void
+    ) {
         let client = EntitlementClient(config: config)
         // Ревью 0.4.1: результат — всегда на main-потоке.
         let completeOnMain: (PaywallResult) -> Void = { result in
             DispatchQueue.main.async { completion(result) }
         }
-        WebViewPaywallPresenter.present(url: url) { event in
+        present { event in
             // Успех с моста → грант уже записан (ранний грант на бэке) —
             // короткий поллинг добирает его. Закрытие без успеха — окно шире
             // (ревью 0.4.1): юзер мог оплатить и закрыть до прихода
@@ -428,14 +447,13 @@ public enum Web2App {
                 }
             }
         }
-        #else
-        SdkLogger.log("paywall.unavailable_platform", level: "warn")
-        completion(.unavailable)
-        #endif
     }
+    #endif
 
     /// Встроенный показ по paywallId — резолв URL той же публичной ручкой,
-    /// затем `openWebPaywallEmbedded(paywallURL:)`.
+    /// затем `openWebPaywallEmbedded(paywallURL:)`. Если пейвол предзагружен
+    /// (`preloadPaywalls`) с теми же email/profile-id — показ мгновенный, без
+    /// резолва и загрузки страницы.
     public static func openWebPaywallEmbedded(
         paywallId: String,
         email: String? = nil,
@@ -447,6 +465,98 @@ public enum Web2App {
             SdkLogger.error("paywall.not_configured")
             return completion(.unavailable)
         }
+
+        #if canImport(UIKit) && canImport(WebKit)
+        if let guid = guidStore.load() {
+            let params = PaywallPreload.Params(
+                guid: guid,
+                email: email,
+                adaptyProfileId: adaptyProfileId,
+                revenuecatProfileId: revenuecatProfileId)
+            // Кэш предзагрузки и показ — только главный поток (как у
+            // preloadPaywalls/invalidate/clear): метод по-прежнему можно звать
+            // из любого потока. Промах кэша — обычный путь, как раньше.
+            let run: () -> Void = {
+                guard
+                    let paywall = PaywallPreloader.shared.take(
+                        paywallId: paywallId, params: params)
+                else {
+                    return openEmbeddedResolvingURL(
+                        config: config,
+                        paywallId: paywallId,
+                        email: email,
+                        adaptyProfileId: adaptyProfileId,
+                        revenuecatProfileId: revenuecatProfileId,
+                        completion: completion)
+                }
+                SdkLogger.shared.setGuid(guid)
+                SdkLogger.log("paywall.open_embedded_preloaded", context: ["paywallId": paywallId])
+                runEmbeddedPaywall(
+                    config: config,
+                    guid: guid,
+                    completion: { result in
+                        PaywallPreloader.shared.refill(paywallId: paywallId) { id, done in
+                            resolvePaywallURL(config: config, paywallId: id, completion: done)
+                        }
+                        completion(result)
+                    },
+                    present: { onEvent in
+                        WebViewPaywallPresenter.present(paywall: paywall, onEvent: onEvent)
+                    })
+            }
+            if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+            return
+        }
+        #endif
+
+        openEmbeddedResolvingURL(
+            config: config,
+            paywallId: paywallId,
+            email: email,
+            adaptyProfileId: adaptyProfileId,
+            revenuecatProfileId: revenuecatProfileId,
+            completion: completion)
+    }
+
+    /// Обычный путь `openWebPaywallEmbedded(paywallId:)`: резолв URL по сети,
+    /// затем показ на главном потоке. Можно звать из любого потока.
+    private static func openEmbeddedResolvingURL(
+        config: Web2AppConfig,
+        paywallId: String,
+        email: String?,
+        adaptyProfileId: String?,
+        revenuecatProfileId: String?,
+        completion: @escaping (PaywallResult) -> Void
+    ) {
+        resolvePaywallURL(config: config, paywallId: paywallId) { paywallURL in
+            DispatchQueue.main.async {
+                guard let paywallURL else { return completion(.unavailable) }
+                openWebPaywallEmbedded(
+                    paywallURL: paywallURL,
+                    email: email,
+                    adaptyProfileId: adaptyProfileId,
+                    revenuecatProfileId: revenuecatProfileId,
+                    completion: { result in
+                        #if canImport(UIKit) && canImport(WebKit)
+                        // Был в списке предзагрузки, но инстанс не подошёл —
+                        // следующий показ снова должен быть мгновенным.
+                        PaywallPreloader.shared.refill(paywallId: paywallId) { id, done in
+                            resolvePaywallURL(config: config, paywallId: id, completion: done)
+                        }
+                        #endif
+                        completion(result)
+                    })
+            }
+        }
+    }
+
+    /// `GET /public/paywall-url/:paywallId` → URL опубликованного пейвола
+    /// (nil — не опубликован / сеть). Колбэк — на фоновом потоке URLSession.
+    private static func resolvePaywallURL(
+        config: Web2AppConfig,
+        paywallId: String,
+        completion: @escaping (URL?) -> Void
+    ) {
         SdkLogger.log("paywall.resolve_url", context: ["paywallId": paywallId])
         let resolveUrl = config.baseUrl
             .appendingPathComponent("public/paywall-url")
@@ -460,18 +570,97 @@ public enum Web2App {
                 SdkLogger.error(
                     "paywall.resolve_url_failed",
                     context: ["paywallId": paywallId, "http": String(code)])
-                DispatchQueue.main.async { completion(.unavailable) }
+                completion(nil)
                 return
             }
-            DispatchQueue.main.async {
-                openWebPaywallEmbedded(
-                    paywallURL: paywallURL,
-                    email: email,
-                    adaptyProfileId: adaptyProfileId,
-                    revenuecatProfileId: revenuecatProfileId,
-                    completion: completion)
-            }
+            completion(paywallURL)
         }.resume()
+    }
+
+    // MARK: preloadPaywalls (0.8.0 — мгновенный показ встроенного пейвола)
+
+    /// Заранее загружает встроенные пейволы в фоновые WKWebView — по одному на
+    /// `paywallId`. Потом `openWebPaywallEmbedded(paywallId:)` с теми же
+    /// `email` / profile-id показывает готовую страницу сразу, без белого экрана.
+    ///
+    /// Зовите ПОСЛЕ успешного `identify` (до него guid нет — вызов ничего не
+    /// сделает) и получения profile-id из Adapty/RevenueCat, задолго до показа. Повторный вызов
+    /// задаёт НОВЫЙ набор: пейволы не из списка выгружаются, загруженные с теми
+    /// же параметрами остаются. После показа инстанс пересоздаётся автоматически.
+    ///
+    /// Не подошёл инстанс (другие email/profile-id, старше часа, не догрузился,
+    /// iOS забрала память) — показ идёт обычным путём, ничего не ломается.
+    ///
+    /// Страница открывается с `preload=1` и до показа ничего не засчитывает:
+    /// просмотр (`PAYWALL_VIEW`), пиксели и замер скорости уходят только после
+    /// сигнала показа (`web2app:shown`). Веб-часть контракта сервис
+    /// поддерживает — предзагрузку можно включать, статистику она не завышает.
+    ///
+    /// Если `identify` вернул `needsEmailFallback`, guid ещё нет и вызов молча
+    /// ничего не сделает (`paywall.preload_no_guid`) — позовите его снова, когда
+    /// `Web2App.currentGuid()` станет не nil. После каждого показа (с любым исходом) предзагрузка
+    /// этого пейвола запускается снова — не нужен, `invalidatePreloadedPaywalls`.
+    ///
+    /// Каждый инстанс — отдельный WebView-процесс (десятки МБ): держите наготове
+    /// только те пейволы, которые реально покажете.
+    public static func preloadPaywalls(
+        paywallIds: [String],
+        email: String? = nil,
+        adaptyProfileId: String? = nil,
+        revenuecatProfileId: String? = nil
+    ) {
+        guard let config else {
+            SdkLogger.error("paywall.not_configured")
+            return
+        }
+        // guid НЕ создаём: предзагрузку зовут на старте, и свежий guid до
+        // `identify` выдал бы себя за сохранённый — опознание по диплинку и
+        // отпечатку не случилось бы вовсе.
+        guard let guid = guidStore.load() else {
+            SdkLogger.log("paywall.preload_no_guid", level: "warn")
+            return
+        }
+        SdkLogger.shared.setGuid(guid)
+        SdkLogger.log("paywall.preload", context: ["count": String(paywallIds.count)])
+
+        #if canImport(UIKit) && canImport(WebKit)
+        let params = PaywallPreload.Params(
+            guid: guid,
+            email: email,
+            adaptyProfileId: adaptyProfileId,
+            revenuecatProfileId: revenuecatProfileId)
+        let run = {
+            PaywallPreloader.shared.preload(paywallIds: paywallIds, params: params) { id, done in
+                resolvePaywallURL(config: config, paywallId: id, completion: done)
+            }
+        }
+        if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+        #else
+        SdkLogger.log("paywall.unavailable_platform", level: "warn")
+        #endif
+    }
+
+    /// Выгрузить конкретные предзагруженные пейволы — например, приложение
+    /// знает, что в этой сессии их уже не покажет, и не хочет держать WebView
+    /// в памяти. Пейвол убирается из набора предзагрузки: после показа он не
+    /// пересоздаётся, остальные пейволы остаются наготове. Показ по такому
+    /// `paywallId` по-прежнему работает — обычным путём, с загрузкой. Вернуть
+    /// его в набор можно новым `preloadPaywalls`.
+    public static func invalidatePreloadedPaywalls(paywallIds: [String]) {
+        SdkLogger.log("paywall.preload_invalidate", context: ["count": String(paywallIds.count)])
+        #if canImport(UIKit) && canImport(WebKit)
+        let run = { PaywallPreloader.shared.invalidate(paywallIds: paywallIds) }
+        if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+        #endif
+    }
+
+    /// Выгрузить все предзагруженные пейволы (например, при логауте: страницы
+    /// загружены с email / profile-id прежнего пользователя).
+    public static func clearPreloadedPaywalls() {
+        #if canImport(UIKit) && canImport(WebKit)
+        let run = { PaywallPreloader.shared.clear() }
+        if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+        #endif
     }
 
     // MARK: openQuizEmbedded (Б-2 — квиз во встроенном WebView)
