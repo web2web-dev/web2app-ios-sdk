@@ -18,6 +18,34 @@ import Foundation
 public enum Web2App {
     private static var config: Web2AppConfig?
     private static let guidStore = GuidStore()
+    private static let provisionalGuidStore = ProvisionalGuidStore()
+
+    /// guid для показа страницы: сохранённый, иначе временный из предзагрузки,
+    /// иначе новый — и он становится настоящим (Keychain). Показ и раньше
+    /// создавал guid сам; временный подставляется, чтобы фоновые страницы,
+    /// загруженные под него, остались пригодны.
+    private static func adoptGuidForShow() -> String {
+        let saved = guidStore.load()
+        let guid = PaywallPreload.guidForShow(
+            saved: saved, provisional: provisionalGuidStore.load(),
+            mint: { UUID().uuidString })
+        if saved == nil {
+            guidStore.save(guid)
+            SdkLogger.log("guid.adopted_on_show")
+        }
+        provisionalGuidStore.clear()
+        SdkLogger.shared.setGuid(guid)
+        return guid
+    }
+
+    /// Юзера опознали (`identify`) — временный guid больше не нужен, а фоновые
+    /// страницы, загруженные под него, надо перегрузить под настоящий.
+    private static func didIdentify() {
+        provisionalGuidStore.clear()
+        #if canImport(UIKit) && canImport(WebKit)
+        DispatchQueue.main.async { PaywallPreloader.shared.guidDidChange() }
+        #endif
+    }
 
     /// Слушатель событий воронки (`setFunnelEventListener`). Под замком —
     /// пишется с потока интегратора, читается с потока моста (аналог
@@ -131,6 +159,7 @@ public enum Web2App {
                 if let guid {
                     guidStore.save(guid)
                     SdkLogger.shared.setGuid(guid)
+                    didIdentify()
                     SdkLogger.log(
                         "identify.fingerprint_matched",
                         context: ["matchMethod": matchMethod ?? "unknown"])
@@ -154,6 +183,7 @@ public enum Web2App {
             case .success(let guid):
                 guidStore.save(guid)
                 SdkLogger.shared.setGuid(guid)
+                didIdentify()
                 SdkLogger.log("identify.resolved")
                 AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
                 completion(.success(guid))
@@ -256,9 +286,7 @@ public enum Web2App {
 
         // guid-поллинг: берём client-held guid или чеканим новый (как web-visitorId),
         // персистим — grant на вебе ляжет на него, по нему же поллим entitlement.
-        let guid = guidStore.load() ?? UUID().uuidString
-        guidStore.save(guid)
-        SdkLogger.shared.setGuid(guid)
+        let guid = adoptGuidForShow()
         let url = WebPaywallLauncher.appOriginURL(
             paywallURL: paywallURL,
             email: email,
@@ -378,9 +406,7 @@ public enum Web2App {
             SdkLogger.error("paywall.not_configured")
             return completion(.unavailable)
         }
-        let guid = guidStore.load() ?? UUID().uuidString
-        guidStore.save(guid)
-        SdkLogger.shared.setGuid(guid)
+        let guid = adoptGuidForShow()
         let url = WebPaywallLauncher.appOriginURL(
             paywallURL: paywallURL,
             email: email,
@@ -467,7 +493,9 @@ public enum Web2App {
         }
 
         #if canImport(UIKit) && canImport(WebKit)
-        if let guid = guidStore.load() {
+        // Временный guid тоже годится: под него загружены фоновые страницы
+        // неопознанного юзера. Настоящим он станет при показе (adoptGuidForShow).
+        if let guid = guidStore.load() ?? provisionalGuidStore.load() {
             let params = PaywallPreload.Params(
                 guid: guid,
                 email: email,
@@ -489,15 +517,13 @@ public enum Web2App {
                         revenuecatProfileId: revenuecatProfileId,
                         completion: completion)
                 }
-                SdkLogger.shared.setGuid(guid)
+                let shownGuid = adoptGuidForShow()
                 SdkLogger.log("paywall.open_embedded_preloaded", context: ["paywallId": paywallId])
                 runEmbeddedPaywall(
                     config: config,
-                    guid: guid,
+                    guid: shownGuid,
                     completion: { result in
-                        PaywallPreloader.shared.refill(paywallId: paywallId) { id, done in
-                            resolvePaywallURL(config: config, paywallId: id, completion: done)
-                        }
+                        PaywallPreloader.shared.refill(paywallId: paywallId)
                         completion(result)
                     },
                     present: { onEvent in
@@ -540,9 +566,7 @@ public enum Web2App {
                         #if canImport(UIKit) && canImport(WebKit)
                         // Был в списке предзагрузки, но инстанс не подошёл —
                         // следующий показ снова должен быть мгновенным.
-                        PaywallPreloader.shared.refill(paywallId: paywallId) { id, done in
-                            resolvePaywallURL(config: config, paywallId: id, completion: done)
-                        }
+                        PaywallPreloader.shared.refill(paywallId: paywallId)
                         #endif
                         completion(result)
                     })
@@ -583,8 +607,9 @@ public enum Web2App {
     /// `paywallId`. Потом `openWebPaywallEmbedded(paywallId:)` с теми же
     /// `email` / profile-id показывает готовую страницу сразу, без белого экрана.
     ///
-    /// Зовите ПОСЛЕ успешного `identify` (до него guid нет — вызов ничего не
-    /// сделает) и получения profile-id из Adapty/RevenueCat, задолго до показа. Повторный вызов
+    /// Зовите, когда известны profile-id из Adapty/RevenueCat, задолго до
+    /// показа — лучше после `identify` (опознанному юзеру страницы сразу
+    /// грузятся под его guid; иначе их перегрузят, когда опознание случится). Повторный вызов
     /// задаёт НОВЫЙ набор: пейволы не из списка выгружаются, загруженные с теми
     /// же параметрами остаются. После показа инстанс пересоздаётся автоматически.
     ///
@@ -596,9 +621,12 @@ public enum Web2App {
     /// сигнала показа (`web2app:shown`). Веб-часть контракта сервис
     /// поддерживает — предзагрузку можно включать, статистику она не завышает.
     ///
-    /// Если `identify` вернул `needsEmailFallback`, guid ещё нет и вызов молча
-    /// ничего не сделает (`paywall.preload_no_guid`) — позовите его снова, когда
-    /// `Web2App.currentGuid()` станет не nil. После каждого показа (с любым исходом) предзагрузка
+    /// Неопознанный юзер (`identify` вернул `needsEmailFallback`, органическая
+    /// установка) тоже получает предзагрузку: страницы грузятся под временный
+    /// guid, который `identify` не видит, — опознание по отпечатку и
+    /// восстановление по email продолжают работать. Настоящим он становится
+    /// при первом показе страницы. Опознали позже — фоновые страницы
+    /// перегружаются под настоящий guid сами. После каждого показа (с любым исходом) предзагрузка
     /// этого пейвола запускается снова — не нужен, `invalidatePreloadedPaywalls`.
     ///
     /// Каждый инстанс — отдельный WebView-процесс (десятки МБ): держите наготове
@@ -613,26 +641,34 @@ public enum Web2App {
             SdkLogger.error("paywall.not_configured")
             return
         }
-        // guid НЕ создаём: предзагрузку зовут на старте, и свежий guid до
-        // `identify` выдал бы себя за сохранённый — опознание по диплинку и
-        // отпечатку не случилось бы вовсе.
-        guard let guid = guidStore.load() else {
-            SdkLogger.log("paywall.preload_no_guid", level: "warn")
-            return
+        // В Keychain guid НЕ создаём: предзагрузку зовут на старте, и guid до
+        // `identify` выдал бы себя за сохранённый — опознание по диплинку,
+        // отпечатку и email не случилось бы вовсе. Неопознанному юзеру —
+        // временный guid (ProvisionalGuidStore), `identify` его не видит.
+        let chosen = PaywallPreload.guidForPreload(
+            saved: guidStore.load(), provisional: provisionalGuidStore.load(),
+            mint: { UUID().uuidString })
+        if let fresh = chosen.newProvisional {
+            provisionalGuidStore.save(fresh)
+            SdkLogger.log("paywall.preload_provisional_guid")
         }
-        SdkLogger.shared.setGuid(guid)
         SdkLogger.log("paywall.preload", context: ["count": String(paywallIds.count)])
 
         #if canImport(UIKit) && canImport(WebKit)
-        let params = PaywallPreload.Params(
-            guid: guid,
+        let options = PaywallPreload.Options(
             email: email,
             adaptyProfileId: adaptyProfileId,
             revenuecatProfileId: revenuecatProfileId)
         let run = {
-            PaywallPreloader.shared.preload(paywallIds: paywallIds, params: params) { id, done in
-                resolvePaywallURL(config: config, paywallId: id, completion: done)
-            }
+            PaywallPreloader.shared.preload(
+                paywallIds: paywallIds,
+                options: options,
+                currentGuid: {
+                    guidStore.load() ?? provisionalGuidStore.load() ?? chosen.guid
+                },
+                resolve: { id, done in
+                    resolvePaywallURL(config: config, paywallId: id, completion: done)
+                })
         }
         if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
         #else
@@ -716,9 +752,7 @@ public enum Web2App {
             SdkLogger.error("quiz.not_configured")
             return completion(.unavailable)
         }
-        let guid = guidStore.load() ?? UUID().uuidString
-        guidStore.save(guid)
-        SdkLogger.shared.setGuid(guid)
+        let guid = adoptGuidForShow()
         let url = QuizPresentation.quizURL(
             quizURL: quizURL,
             email: email,
@@ -778,7 +812,10 @@ public enum Web2App {
     public static func debugSetGuid(_ guid: String) { guidStore.save(guid) }
 
     /// DEBUG-only: сброс сохранённого guid (для повторного прогона).
-    public static func debugClear() { guidStore.clear() }
+    public static func debugClear() {
+        guidStore.clear()
+        provisionalGuidStore.clear()
+    }
     #endif
 }
 

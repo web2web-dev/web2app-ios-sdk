@@ -100,7 +100,7 @@ Web2App.entitlement { grant in
 | `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола (Safari-режим): закрывает шторку и ускоряет получение доступа. |
 | `Web2App.openWebPaywall(paywallId:email:completion:)` | Открыть пейвол по его ID — публичный URL резолвится автоматически. |
 | `Web2App.openWebPaywallEmbedded(paywallURL:/paywallId:email:completion:)` | Встроенный WebView-режим: авто-закрытие при успехе оплаты, результат — типизированный `PaywallResult` (paid / notPaid / pending / unavailable). URL-схема не нужна. |
-| `Web2App.preloadPaywalls(paywallIds:email:)` | **(0.8.0)** Заранее загрузить встроенные пейволы в фоне — потом `openWebPaywallEmbedded(paywallId:)` показывает их мгновенно. Звать после `identify`. См. «Мгновенный показ пейвола». |
+| `Web2App.preloadPaywalls(paywallIds:email:)` | **(0.8.0)** Заранее загрузить встроенные пейволы в фоне — потом `openWebPaywallEmbedded(paywallId:)` показывает их мгновенно, в том числе неопознанному пользователю. См. «Мгновенный показ пейвола». |
 | `Web2App.invalidatePreloadedPaywalls(paywallIds:)` | **(0.8.0)** Выгрузить отдельные предзагруженные пейволы, которые в этой сессии уже не покажете, — освобождает память. |
 | `Web2App.clearPreloadedPaywalls()` | **(0.8.0)** Выгрузить все предзагруженные пейволы (например, при логауте). |
 | `Web2App.openQuizEmbedded(quizURL:email:completion:)` | Показать КВИЗ встроенным WebView. Результат — `QuizResult` (закрыт страницей / пользователем / оплатой). Права не поллит. |
@@ -195,8 +195,7 @@ SDK нет.
 их в фоне:
 
 ```swift
-// После успешного identify и получения profile-id, задолго до показа
-// (до identify guid нет, и вызов ничего не сделает):
+// Когда известны profile-id, задолго до показа (лучше — после identify):
 Web2App.preloadPaywalls(
     paywallIds: ["pw_onboarding", "pw_settings", "pw_limit"],
     adaptyProfileId: adaptyId,
@@ -221,11 +220,13 @@ Web2App.openWebPaywallEmbedded(paywallId: "pw_onboarding", adaptyProfileId: adap
 - Каждый фоновый WebView — отдельный процесс на десятки МБ. Держите наготове
   только то, что реально покажете.
 
-- Если `identify` вернул `needsEmailFallback` (пользователь пришёл без кода
-  перехода), guid ещё нет, и `preloadPaywalls` молча ничего не делает (в журнале
-  SDK — `paywall.preload_no_guid`). Вызовите его ещё раз, когда
-  `Web2App.currentGuid()` станет не nil: guid появляется при первом показе
-  пейвола или квиза либо после `identify` по коду из письма.
+- Работает и для неопознанного пользователя (органическая установка,
+  `identify` вернул `needsEmailFallback`): SDK грузит страницы под временный
+  guid, и первый же пейвол открывается мгновенно. Временный guid `identify` не
+  видит, поэтому повторное опознание по отпечатку и восстановление по email
+  работают как раньше; настоящим guid становится при первом показе страницы.
+  Если пользователя опознали позже, фоновые страницы перегружаются под его
+  guid сами — повторно звать `preloadPaywalls` не нужно.
 - После каждого показа (с любым исходом — оплатил, закрыл, не удалось показать) предзагрузка этого пейвола запускается снова. Если он
   больше не нужен — вызовите `Web2App.invalidatePreloadedPaywalls(paywallIds:)`.
 

@@ -44,3 +44,19 @@ struct GuidStore {
         ]
     }
 }
+
+/// Временный guid неопознанного юзера — только под предзагрузку пейволов.
+///
+/// Лежит в UserDefaults, а НЕ в Keychain: `identify` читает только `GuidStore`,
+/// поэтому временный guid не выдаёт себя за опознанного юзера — повторные
+/// попытки по отпечатку и восстановление по email работают как без него.
+/// Настоящим (в `GuidStore`) он становится только в момент показа страницы,
+/// когда SDK и раньше создавал guid сам. Переживает перезапуск, чтобы страница
+/// не связывала profile-id подписочной платформы с новым guid на каждом старте.
+struct ProvisionalGuidStore {
+    private let key = "app.web2app.sdk.provisionalGuid"
+
+    func load() -> String? { UserDefaults.standard.string(forKey: key) }
+    func save(_ guid: String) { UserDefaults.standard.set(guid, forKey: key) }
+    func clear() { UserDefaults.standard.removeObject(forKey: key) }
+}
