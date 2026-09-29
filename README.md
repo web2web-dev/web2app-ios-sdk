@@ -218,8 +218,9 @@ Web2App.openWebPaywallEmbedded(paywallId: "pw_onboarding", adaptyProfileId: adap
   WebView в памяти: `Web2App.invalidatePreloadedPaywalls(paywallIds: ["pw_limit"])`.
   Остальные останутся наготове; показ по этому ID будет работать, но с загрузкой.
 - При логауте вызовите `Web2App.clearPreloadedPaywalls()` — выгрузит всё. С 0.8.1
-  он же стирает временный guid неопознанного пользователя (см. ниже), чтобы
-  следующий пользователь на этом телефоне получил свой.
+  он же стирает временный guid предзагрузки (см. ниже). Настоящий guid он не
+  стирает: если пользователь хоть раз открывал страницу (пейвол или квиз), его
+  guid уже сохранён и после этого вызова остаётся.
 - Каждый фоновый WebView — отдельный процесс на десятки МБ. Держите наготове
   только то, что реально покажете.
 
@@ -233,8 +234,10 @@ Web2App.openWebPaywallEmbedded(paywallId: "pw_onboarding", adaptyProfileId: adap
 - Временный guid запоминает profile-id Adapty/RevenueCat, с которым его создали
   (страница связывает их на сервере, и эту связку не перезаписать). Пришёл
   `preloadPaywalls` с другим profile-id — SDK выпускает новый временный guid;
-  показ с другим profile-id не делает прежний временный guid настоящим. Вызов
-  без profile-id сменой профиля не считается.
+  показ с другим profile-id не делает прежний временный guid настоящим.
+  Показ без profile-id (например, квиз) берёт временный guid, только если тот
+  ещё ни к какому профилю не привязан, иначе создаёт новый. Вызов
+  `preloadPaywalls` без profile-id сменой профиля не считается.
 - В 0.8.0 без guid (`identify` вернул `needsEmailFallback`) `preloadPaywalls`
   ничего не делал (в журнале — `paywall.preload_no_guid`): на 0.8.0 зовите его
   ещё раз, когда `Web2App.currentGuid()` станет не nil.
