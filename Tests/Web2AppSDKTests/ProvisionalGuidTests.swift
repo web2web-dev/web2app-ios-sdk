@@ -85,6 +85,16 @@ final class ProvisionalGuidStoreTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: ProvisionalGuidStore.key))
     }
 
+    /// Испорченная запись (пустой guid) или строка от сборки до 0.8.1, где под
+    /// тем же ключом лежал голый guid без привязки, — временного guid нет:
+    /// при следующей предзагрузке выпустится новый, уже с привязкой к профилю.
+    func testBrokenOrLegacyRecordLoadsNil() {
+        defaults.set(["guid": ""], forKey: ProvisionalGuidStore.key)
+        XCTAssertNil(ProvisionalGuidStore(defaults: defaults).load())
+        defaults.set("P-legacy", forKey: ProvisionalGuidStore.key)
+        XCTAssertNil(ProvisionalGuidStore(defaults: defaults).load())
+    }
+
     /// Пустая строка profile-id = «не передали» — не превращается в привязку.
     func testEmptyProfileStringsAreNotBindings() {
         XCTAssertEqual(record("P", adapty: "", revenuecat: ""), record("P"))
