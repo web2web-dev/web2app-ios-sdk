@@ -76,48 +76,9 @@ final class PaywallPreloadTests: XCTestCase {
     }
 }
 
-/// Временный guid неопознанного юзера: предзагрузка без записи в Keychain.
+/// Параметры предзагрузки несут guid: инстанс под временный guid годится только
+/// показу под тот же guid. Правила выбора guid — ProvisionalGuidTests.swift.
 final class PaywallPreloadGuidTests: XCTestCase {
-    func testPreloadUsesSavedGuidAndDoesNotMint() {
-        var minted = false
-        let r = PaywallPreload.guidForPreload(
-            saved: "saved", provisional: "prov", mint: { minted = true; return "new" })
-        XCTAssertEqual(r.guid, "saved")
-        XCTAssertNil(r.newProvisional)
-        XCTAssertFalse(minted)
-    }
-
-    /// Органика на втором запуске: тот же временный guid, а не новый на каждом
-    /// старте (иначе страница плодила бы связки profile-id на сервере).
-    func testPreloadReusesProvisional() {
-        let r = PaywallPreload.guidForPreload(saved: nil, provisional: "prov", mint: { "new" })
-        XCTAssertEqual(r.guid, "prov")
-        XCTAssertNil(r.newProvisional)
-    }
-
-    func testPreloadMintsProvisionalForUnidentifiedUser() {
-        let r = PaywallPreload.guidForPreload(saved: nil, provisional: nil, mint: { "new" })
-        XCTAssertEqual(r.guid, "new")
-        XCTAssertEqual(r.newProvisional, "new", "новый guid — только временный")
-    }
-
-    /// Показ у органики берёт тот guid, под который загружены фоновые страницы.
-    func testShowAdoptsProvisional() {
-        XCTAssertEqual(
-            PaywallPreload.guidForShow(saved: nil, provisional: "prov", mint: { "new" }), "prov")
-    }
-
-    func testShowPrefersSavedOverProvisional() {
-        XCTAssertEqual(
-            PaywallPreload.guidForShow(saved: "saved", provisional: "prov", mint: { "new" }),
-            "saved")
-    }
-
-    func testShowMintsWhenNothing() {
-        XCTAssertEqual(
-            PaywallPreload.guidForShow(saved: nil, provisional: nil, mint: { "new" }), "new")
-    }
-
     /// Инстанс, загруженный под временный guid, подходит показу после того, как
     /// этот guid стал настоящим, и не подходит, если юзера опознали иначе.
     func testOptionsParamsMatchOnlySameGuid() {

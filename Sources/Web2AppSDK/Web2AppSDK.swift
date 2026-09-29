@@ -18,30 +18,37 @@ import Foundation
 public enum Web2App {
     private static var config: Web2AppConfig?
     private static let guidStore = GuidStore()
-    private static let provisionalGuidStore = ProvisionalGuidStore()
+    /// Настоящий guid (Keychain) + временный guid предзагрузки (UserDefaults).
+    /// Решения о guid — в `GuidLifecycle` / `GuidRules` (ProvisionalGuid.swift).
+    private static let guidLifecycle = GuidLifecycle(
+        real: guidStore, provisional: ProvisionalGuidStore(), mint: { UUID().uuidString })
 
-    /// guid для показа страницы: сохранённый, иначе временный из предзагрузки,
-    /// иначе новый — и он становится настоящим (Keychain). Показ и раньше
-    /// создавал guid сам; временный подставляется, чтобы фоновые страницы,
+    /// guid для показа страницы: сохранённый, иначе временный из предзагрузки
+    /// (если он не привязан к другому профилю подписочной платформы, чем передан
+    /// в этот показ), иначе новый — и он становится настоящим (Keychain). Показ и
+    /// раньше создавал guid сам; временный подставляется, чтобы фоновые страницы,
     /// загруженные под него, остались пригодны.
-    private static func adoptGuidForShow() -> String {
-        let saved = guidStore.load()
-        let guid = PaywallPreload.guidForShow(
-            saved: saved, provisional: provisionalGuidStore.load(),
-            mint: { UUID().uuidString })
-        if saved == nil {
-            guidStore.save(guid)
+    private static func adoptGuidForShow(
+        adaptyProfileId: String?, revenuecatProfileId: String?
+    ) -> String {
+        let decision = guidLifecycle.adoptForShow(
+            adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
+        if decision.discardedProvisional {
+            SdkLogger.log("guid.provisional_discarded_profile_changed", level: "warn")
+        }
+        if decision.persist {
             SdkLogger.log("guid.adopted_on_show")
         }
-        provisionalGuidStore.clear()
-        SdkLogger.shared.setGuid(guid)
-        return guid
+        SdkLogger.shared.setGuid(decision.guid)
+        return decision.guid
     }
 
-    /// Юзера опознали (`identify`) — временный guid больше не нужен, а фоновые
-    /// страницы, загруженные под него, надо перегрузить под настоящий.
-    private static func didIdentify() {
-        provisionalGuidStore.clear()
+    /// Юзера опознали (`identify`): guid сохраняется настоящим, временный
+    /// стирается, а фоновые страницы, загруженные под временный, перегружаются
+    /// под настоящий.
+    private static func didIdentify(_ guid: String) {
+        guidLifecycle.identified(guid)
+        SdkLogger.shared.setGuid(guid)
         #if canImport(UIKit) && canImport(WebKit)
         DispatchQueue.main.async { PaywallPreloader.shared.guidDidChange() }
         #endif
@@ -157,9 +164,7 @@ public enum Web2App {
             SdkLogger.log("identify.fingerprint_attempt")
             FingerprintResolver(config: config).resolve { guid, matchMethod in
                 if let guid {
-                    guidStore.save(guid)
-                    SdkLogger.shared.setGuid(guid)
-                    didIdentify()
+                    didIdentify(guid)
                     SdkLogger.log(
                         "identify.fingerprint_matched",
                         context: ["matchMethod": matchMethod ?? "unknown"])
@@ -181,9 +186,7 @@ public enum Web2App {
         AttributionResolver(config: config).resolveToken(token) { result in
             switch result {
             case .success(let guid):
-                guidStore.save(guid)
-                SdkLogger.shared.setGuid(guid)
-                didIdentify()
+                didIdentify(guid)
                 SdkLogger.log("identify.resolved")
                 AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
                 completion(.success(guid))
@@ -286,7 +289,8 @@ public enum Web2App {
 
         // guid-поллинг: берём client-held guid или чеканим новый (как web-visitorId),
         // персистим — grant на вебе ляжет на него, по нему же поллим entitlement.
-        let guid = adoptGuidForShow()
+        let guid = adoptGuidForShow(
+            adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
         let url = WebPaywallLauncher.appOriginURL(
             paywallURL: paywallURL,
             email: email,
@@ -406,7 +410,8 @@ public enum Web2App {
             SdkLogger.error("paywall.not_configured")
             return completion(.unavailable)
         }
-        let guid = adoptGuidForShow()
+        let guid = adoptGuidForShow(
+            adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
         let url = WebPaywallLauncher.appOriginURL(
             paywallURL: paywallURL,
             email: email,
@@ -495,7 +500,7 @@ public enum Web2App {
         #if canImport(UIKit) && canImport(WebKit)
         // Временный guid тоже годится: под него загружены фоновые страницы
         // неопознанного юзера. Настоящим он станет при показе (adoptGuidForShow).
-        if let guid = guidStore.load() ?? provisionalGuidStore.load() {
+        if let guid = guidLifecycle.guidForPreloadedPages() {
             let params = PaywallPreload.Params(
                 guid: guid,
                 email: email,
@@ -517,7 +522,8 @@ public enum Web2App {
                         revenuecatProfileId: revenuecatProfileId,
                         completion: completion)
                 }
-                let shownGuid = adoptGuidForShow()
+                let shownGuid = adoptGuidForShow(
+                    adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
                 SdkLogger.log("paywall.open_embedded_preloaded", context: ["paywallId": paywallId])
                 runEmbeddedPaywall(
                     config: config,
@@ -645,12 +651,19 @@ public enum Web2App {
         // `identify` выдал бы себя за сохранённый — опознание по диплинку,
         // отпечатку и email не случилось бы вовсе. Неопознанному юзеру —
         // временный guid (ProvisionalGuidStore), `identify` его не видит.
-        let chosen = PaywallPreload.guidForPreload(
-            saved: guidStore.load(), provisional: provisionalGuidStore.load(),
-            mint: { UUID().uuidString })
-        if let fresh = chosen.newProvisional {
-            provisionalGuidStore.save(fresh)
+        // Временный guid привязан к profile-id, под который создан: пришёл
+        // ДРУГОЙ непустой profile-id — выпускается новый временный guid (у
+        // временного покупок нет), иначе страница связала бы на сервере новый
+        // профиль со старым guid, а занятую связку сервер не перезаписывает.
+        let chosen = guidLifecycle.preload(
+            adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
+        switch chosen.source {
+        case .minted:
             SdkLogger.log("paywall.preload_provisional_guid")
+        case .reissued:
+            SdkLogger.log("paywall.preload_provisional_guid_reissued")
+        case .saved, .provisional:
+            break
         }
         SdkLogger.log("paywall.preload", context: ["count": String(paywallIds.count)])
 
@@ -664,7 +677,7 @@ public enum Web2App {
                 paywallIds: paywallIds,
                 options: options,
                 currentGuid: {
-                    guidStore.load() ?? provisionalGuidStore.load() ?? chosen.guid
+                    guidLifecycle.guidForPreloadedPages() ?? chosen.guid
                 },
                 resolve: { id, done in
                     resolvePaywallURL(config: config, paywallId: id, completion: done)
@@ -752,7 +765,8 @@ public enum Web2App {
             SdkLogger.error("quiz.not_configured")
             return completion(.unavailable)
         }
-        let guid = adoptGuidForShow()
+        let guid = adoptGuidForShow(
+            adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
         let url = QuizPresentation.quizURL(
             quizURL: quizURL,
             email: email,
@@ -814,7 +828,7 @@ public enum Web2App {
     /// DEBUG-only: сброс сохранённого guid (для повторного прогона).
     public static func debugClear() {
         guidStore.clear()
-        provisionalGuidStore.clear()
+        guidLifecycle.clearProvisional()
     }
     #endif
 }

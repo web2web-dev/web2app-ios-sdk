@@ -72,26 +72,8 @@ enum PaywallPreload {
         }
     }
 
-    /// guid для фоновой загрузки. Есть сохранённый (юзер опознан или уже
-    /// открывал страницу) — он. Нет — временный: `identify` его не видит,
-    /// поэтому опознание по отпечатку и восстановление по email у неопознанного
-    /// юзера продолжают работать. Чистая функция (юнит без UIKit).
-    static func guidForPreload(
-        saved: String?, provisional: String?, mint: () -> String
-    ) -> (guid: String, newProvisional: String?) {
-        if let saved { return (saved, nil) }
-        if let provisional { return (provisional, nil) }
-        let fresh = mint()
-        return (fresh, fresh)
-    }
-
-    /// guid в момент показа — тот, что станет настоящим (уходит в Keychain).
-    /// Сохранённый — он; нет — временный, под который уже загружены фоновые
-    /// страницы (иначе первый же показ сделал бы их непригодными); нет и его —
-    /// новый, как было до предзагрузки.
-    static func guidForShow(saved: String?, provisional: String?, mint: () -> String) -> String {
-        saved ?? provisional ?? mint()
-    }
+    // Выбор guid для фоновой загрузки и для показа — `GuidRules` в
+    // ProvisionalGuid.swift (там же привязка временного guid к профилю).
 
     /// URL фонового инстанса: app-origin URL + `preload=1`.
     static func preloadURL(paywallURL: URL, params: Params) -> URL {
@@ -228,9 +210,11 @@ final class PaywallPreloader: NSObject, WKNavigationDelegate {
     /// guid сменился (юзера опознали) — страницы, загруженные под прежний,
     /// оплату связали бы не с тем guid: перегружаем их под новый.
     func guidDidChange() {
-        let guid = currentGuid()
-        for id in requested.keys {
-            guard let entry = entries[id], entry.params.guid != guid else { continue }
+        let ids = GuidRules.pagesToReload(
+            requested: Array(requested.keys),
+            loadedGuids: entries.mapValues { $0.params.guid },
+            currentGuid: currentGuid())
+        for id in ids {
             SdkLogger.log("paywall.preload_reload_guid", context: ["paywallId": id])
             load(id)
         }
