@@ -100,9 +100,9 @@ Web2App.entitlement { grant in
 | `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола (Safari-режим): закрывает шторку и ускоряет получение доступа. |
 | `Web2App.openWebPaywall(paywallId:email:completion:)` | Открыть пейвол по его ID — публичный URL резолвится автоматически. |
 | `Web2App.openWebPaywallEmbedded(paywallURL:/paywallId:email:completion:)` | Встроенный WebView-режим: авто-закрытие при успехе оплаты, результат — типизированный `PaywallResult` (paid / notPaid / pending / unavailable). URL-схема не нужна. |
-| `Web2App.preloadPaywalls(paywallIds:email:)` | **(0.8.0)** Заранее загрузить встроенные пейволы в фоне — потом `openWebPaywallEmbedded(paywallId:)` показывает их мгновенно, в том числе неопознанному пользователю. См. «Мгновенный показ пейвола». |
+| `Web2App.preloadPaywalls(paywallIds:email:)` | **(0.8.0)** Заранее загрузить встроенные пейволы в фоне — потом `openWebPaywallEmbedded(paywallId:)` показывает их мгновенно; с 0.8.1 — и неопознанному пользователю. См. «Мгновенный показ пейвола». |
 | `Web2App.invalidatePreloadedPaywalls(paywallIds:)` | **(0.8.0)** Выгрузить отдельные предзагруженные пейволы, которые в этой сессии уже не покажете, — освобождает память. |
-| `Web2App.clearPreloadedPaywalls()` | **(0.8.0)** Выгрузить все предзагруженные пейволы (например, при логауте). |
+| `Web2App.clearPreloadedPaywalls()` | **(0.8.0)** Выгрузить все предзагруженные пейволы (например, при логауте). С 0.8.1 заодно стирает временный guid неопознанного пользователя. |
 | `Web2App.openQuizEmbedded(quizURL:email:completion:)` | Показать КВИЗ встроенным WebView. Результат — `QuizResult` (закрыт страницей / пользователем / оплатой). Права не поллит. |
 | `Web2App.setFunnelEventListener(_:)` | Подписаться на события прохождения воронки из встроенного показа (`quiz_start`, `quiz_answer`, …). |
 
@@ -195,7 +195,8 @@ SDK нет.
 их в фоне:
 
 ```swift
-// Когда известны profile-id, задолго до показа (лучше — после identify):
+// Когда известны profile-id, задолго до показа (лучше — после identify;
+// с 0.8.1 работает и до опознания, в 0.8.0 без guid вызов ничего не делал):
 Web2App.preloadPaywalls(
     paywallIds: ["pw_onboarding", "pw_settings", "pw_limit"],
     adaptyProfileId: adaptyId,
@@ -216,17 +217,27 @@ Web2App.openWebPaywallEmbedded(paywallId: "pw_onboarding", adaptyProfileId: adap
 - Пейвол точно не понадобится в этой сессии — выгрузите его, чтобы не держать
   WebView в памяти: `Web2App.invalidatePreloadedPaywalls(paywallIds: ["pw_limit"])`.
   Остальные останутся наготове; показ по этому ID будет работать, но с загрузкой.
-- При логауте вызовите `Web2App.clearPreloadedPaywalls()` — выгрузит всё.
+- При логауте вызовите `Web2App.clearPreloadedPaywalls()` — выгрузит всё. С 0.8.1
+  он же стирает временный guid неопознанного пользователя (см. ниже), чтобы
+  следующий пользователь на этом телефоне получил свой.
 - Каждый фоновый WebView — отдельный процесс на десятки МБ. Держите наготове
   только то, что реально покажете.
 
-- Работает и для неопознанного пользователя (органическая установка,
+- **С 0.8.1** работает и для неопознанного пользователя (органическая установка,
   `identify` вернул `needsEmailFallback`): SDK грузит страницы под временный
   guid, и первый же пейвол открывается мгновенно. Временный guid `identify` не
   видит, поэтому повторное опознание по отпечатку и восстановление по email
   работают как раньше; настоящим guid становится при первом показе страницы.
   Если пользователя опознали позже, фоновые страницы перегружаются под его
   guid сами — повторно звать `preloadPaywalls` не нужно.
+- Временный guid запоминает profile-id Adapty/RevenueCat, с которым его создали
+  (страница связывает их на сервере, и эту связку не перезаписать). Пришёл
+  `preloadPaywalls` с другим profile-id — SDK выпускает новый временный guid;
+  показ с другим profile-id не делает прежний временный guid настоящим. Вызов
+  без profile-id сменой профиля не считается.
+- В 0.8.0 без guid (`identify` вернул `needsEmailFallback`) `preloadPaywalls`
+  ничего не делал (в журнале — `paywall.preload_no_guid`): на 0.8.0 зовите его
+  ещё раз, когда `Web2App.currentGuid()` станет не nil.
 - После каждого показа (с любым исходом — оплатил, закрыл, не удалось показать) предзагрузка этого пейвола запускается снова. Если он
   больше не нужен — вызовите `Web2App.invalidatePreloadedPaywalls(paywallIds:)`.
 
