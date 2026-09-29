@@ -75,3 +75,23 @@ final class PaywallPreloadTests: XCTestCase {
         XCTAssertTrue(PaywallPreload.shownScript.contains("new Event('web2app:shown')"))
     }
 }
+
+/// Параметры предзагрузки несут guid: инстанс под временный guid годится только
+/// показу под тот же guid. Правила выбора guid — ProvisionalGuidTests.swift.
+final class PaywallPreloadGuidTests: XCTestCase {
+    /// Инстанс, загруженный под временный guid, подходит показу после того, как
+    /// этот guid стал настоящим, и не подходит, если юзера опознали иначе.
+    func testOptionsParamsMatchOnlySameGuid() {
+        let o = PaywallPreload.Options(
+            email: nil, adaptyProfileId: "ad1", revenuecatProfileId: nil)
+        let loadedAt = Date()
+        XCTAssertTrue(
+            PaywallPreload.isReusable(
+                loadedWith: o.params(guid: "prov"), loadedAt: loadedAt,
+                requested: o.params(guid: "prov"), now: loadedAt))
+        XCTAssertFalse(
+            PaywallPreload.isReusable(
+                loadedWith: o.params(guid: "prov"), loadedAt: loadedAt,
+                requested: o.params(guid: "identified"), now: loadedAt))
+    }
+}

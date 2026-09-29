@@ -5,6 +5,37 @@
 
 ## [Unreleased]
 
+## [0.8.1]
+
+### Changed
+- **Предзагрузка работает и у неопознанного пользователя** (`identify` вернул
+  `needsEmailFallback`, органическая установка). Раньше (0.8.0) без guid
+  `preloadPaywalls` ничего не делал. Теперь страницы грузятся под временный
+  guid (UserDefaults; `identify` его не видит — опознание по отпечатку и
+  восстановление по email не ломаются). Настоящим он становится при первом
+  показе страницы. Опознали позже — фоновые страницы перегружаются под
+  настоящий guid сами. Повторный вызов после первого показа, который советовала
+  0.8.0, больше не нужен, но и не вредит.
+- Временный guid привязан к profile-id Adapty/RevenueCat, под который создан:
+  `preloadPaywalls` с другим непустым profile-id выпускает новый временный guid,
+  показ с другим profile-id прежний временный guid настоящим не делает.
+  Показ без profile-id (например, квиз) берёт временный guid, только если тот
+  ни к какому профилю не привязан. Вызов `preloadPaywalls` без profile-id
+  сменой профиля не считается.
+- `clearPreloadedPaywalls()` стирает и временный guid. Настоящий guid не
+  трогается, как и раньше: если пользователь уже открывал страницу (пейвол или
+  квиз) или `identify` успешно его опознал, его guid сохранён и остаётся.
+- Предзагруженная страница показывается, только если guid, под который она
+  загружена, совпал с guid показа (по нему идёт опрос доступа); иначе показ
+  идёт обычным путём.
+- Журнал SDK: `paywall.preload_no_guid` больше не пишется. Новые записи:
+  `paywall.preload_provisional_guid`, `paywall.preload_provisional_guid_reissued`,
+  `paywall.preload_reload_guid`, `paywall.preload_guid_mismatch`,
+  `paywall.preload_clear`, `guid.adopted_on_show`,
+  `guid.provisional_discarded_profile_changed`.
+- Манифест приватности объявляет доступ к UserDefaults
+  (`NSPrivacyAccessedAPICategoryUserDefaults`, причина `CA92.1`).
+
 ## [0.8.0]
 
 ### Added

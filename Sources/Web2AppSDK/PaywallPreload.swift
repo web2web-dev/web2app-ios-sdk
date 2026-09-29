@@ -57,6 +57,24 @@ enum PaywallPreload {
         }
     }
 
+    /// Что интегратор передал в `preloadPaywalls` — всё, кроме guid. guid
+    /// подставляется в момент загрузки: он может смениться (опознали юзера), и
+    /// пересоздание инстанса должно взять уже новый.
+    struct Options: Equatable {
+        let email: String?
+        let adaptyProfileId: String?
+        let revenuecatProfileId: String?
+
+        func params(guid: String) -> Params {
+            Params(
+                guid: guid, email: email, adaptyProfileId: adaptyProfileId,
+                revenuecatProfileId: revenuecatProfileId)
+        }
+    }
+
+    // Выбор guid для фоновой загрузки и для показа — `GuidRules` в
+    // ProvisionalGuid.swift (там же привязка временного guid к профилю).
+
     /// URL фонового инстанса: app-origin URL + `preload=1`.
     static func preloadURL(paywallURL: URL, params: Params) -> URL {
         let url = WebPaywallLauncher.appOriginURL(
@@ -141,7 +159,11 @@ final class PaywallPreloader: NSObject, WKNavigationDelegate {
 
     /// Что интегратор попросил держать наготове — после показа инстанс
     /// пересоздаётся по этому списку.
-    private var requested: [String: PaywallPreload.Params] = [:]
+    private var requested: [String: PaywallPreload.Options] = [:]
+
+    /// guid на момент загрузки и резолв URL — задаются `preload`.
+    private var currentGuid: () -> String = { "" }
+    private var resolve: (String, @escaping (URL?) -> Void) -> Void = { _, done in done(nil) }
     private var entries: [String: Entry] = [:]
     private var memoryObserver: NSObjectProtocol?
 
@@ -166,18 +188,35 @@ final class PaywallPreloader: NSObject, WKNavigationDelegate {
     /// Лишние инстансы выгружаются, уже загруженные с теми же параметрами — остаются.
     func preload(
         paywallIds: [String],
-        params: PaywallPreload.Params,
+        options: PaywallPreload.Options,
+        currentGuid: @escaping () -> String,
         resolve: @escaping (String, @escaping (URL?) -> Void) -> Void
     ) {
+        self.currentGuid = currentGuid
+        self.resolve = resolve
         let wanted = Set(paywallIds)
         for id in requested.keys where !wanted.contains(id) {
             requested[id] = nil
             drop(id)
         }
+        let params = options.params(guid: currentGuid())
         for id in wanted {
-            requested[id] = params
+            requested[id] = options
             if let entry = entries[id], entry.params == params { continue }
-            load(id, params: params, resolve: resolve)
+            load(id)
+        }
+    }
+
+    /// guid сменился (юзера опознали) — страницы, загруженные под прежний,
+    /// оплату связали бы не с тем guid: перегружаем их под новый.
+    func guidDidChange() {
+        let ids = GuidRules.pagesToReload(
+            requested: Array(requested.keys),
+            loadedGuids: entries.mapValues { $0.params.guid },
+            currentGuid: currentGuid())
+        for id in ids {
+            SdkLogger.log("paywall.preload_reload_guid", context: ["paywallId": id])
+            load(id)
         }
     }
 
@@ -201,12 +240,9 @@ final class PaywallPreloader: NSObject, WKNavigationDelegate {
     }
 
     /// После показа: если пейвол в списке предзагрузки — грузим свежий инстанс.
-    func refill(
-        paywallId: String,
-        resolve: @escaping (String, @escaping (URL?) -> Void) -> Void
-    ) {
-        guard let params = requested[paywallId], entries[paywallId] == nil else { return }
-        load(paywallId, params: params, resolve: resolve)
+    func refill(paywallId: String) {
+        guard requested[paywallId] != nil, entries[paywallId] == nil else { return }
+        load(paywallId)
     }
 
     /// Больше не держать эти пейволы: WebView выгружается, после показа не
@@ -223,22 +259,22 @@ final class PaywallPreloader: NSObject, WKNavigationDelegate {
         dropAllEntries()
     }
 
-    private func load(
-        _ id: String,
-        params: PaywallPreload.Params,
-        resolve: @escaping (String, @escaping (URL?) -> Void) -> Void
-    ) {
+    private func load(_ id: String) {
+        guard let options = requested[id] else { return }
         drop(id)
         let gen = (generation[id] ?? 0) + 1
         generation[id] = gen
         resolve(id) { [weak self] paywallURL in
             DispatchQueue.main.async {
-                guard let self, self.generation[id] == gen, self.requested[id] == params
+                guard let self, self.generation[id] == gen, self.requested[id] == options
                 else { return }
                 guard let paywallURL else {
                     SdkLogger.error("paywall.preload_resolve_failed", context: ["paywallId": id])
                     return
                 }
+                // guid берётся на момент загрузки страницы, а не запроса URL:
+                // юзера могли опознать, пока URL резолвился.
+                let params = options.params(guid: self.currentGuid())
                 let url = PaywallPreload.preloadURL(paywallURL: paywallURL, params: params)
                 let paywall = PaywallWebView.make(url: url, preloaded: true)
                 paywall.webView.navigationDelegate = self

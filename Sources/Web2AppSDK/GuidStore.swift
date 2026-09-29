@@ -44,3 +44,7 @@ struct GuidStore {
         ]
     }
 }
+
+/// Настоящий guid для правил жизни guid (`GuidLifecycle`, файл на Foundation):
+/// подписи `load`/`save`/`clear` уже совпадают с протоколом.
+extension GuidStore: GuidStoring {}
