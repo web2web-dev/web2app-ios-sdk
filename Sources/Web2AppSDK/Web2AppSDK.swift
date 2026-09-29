@@ -498,49 +498,62 @@ public enum Web2App {
         }
 
         #if canImport(UIKit) && canImport(WebKit)
-        // Временный guid тоже годится: под него загружены фоновые страницы
-        // неопознанного юзера. Настоящим он станет при показе (adoptGuidForShow).
-        if let guid = guidLifecycle.guidForPreloadedPages() {
-            let params = PaywallPreload.Params(
-                guid: guid,
-                email: email,
-                adaptyProfileId: adaptyProfileId,
-                revenuecatProfileId: revenuecatProfileId)
-            // Кэш предзагрузки и показ — только главный поток (как у
-            // preloadPaywalls/invalidate/clear): метод по-прежнему можно звать
-            // из любого потока. Промах кэша — обычный путь, как раньше.
-            let run: () -> Void = {
-                guard
-                    let paywall = PaywallPreloader.shared.take(
-                        paywallId: paywallId, params: params)
-                else {
-                    return openEmbeddedResolvingURL(
-                        config: config,
-                        paywallId: paywallId,
+        // Кэш предзагрузки, чтение guid и показ — только главный поток (как у
+        // preloadPaywalls/invalidate/clear): метод по-прежнему можно звать
+        // из любого потока. Промах кэша — обычный путь, как раньше.
+        let run: () -> Void = {
+            let resolveNormally = {
+                openEmbeddedResolvingURL(
+                    config: config,
+                    paywallId: paywallId,
+                    email: email,
+                    adaptyProfileId: adaptyProfileId,
+                    revenuecatProfileId: revenuecatProfileId,
+                    completion: completion)
+            }
+            // Временный guid тоже годится: под него загружены фоновые страницы
+            // неопознанного юзера. Настоящим он станет при показе (adoptGuidForShow).
+            guard
+                let pageGuid = guidLifecycle.guidForPreloadedPages(),
+                let paywall = PaywallPreloader.shared.take(
+                    paywallId: paywallId,
+                    params: PaywallPreload.Params(
+                        guid: pageGuid,
                         email: email,
                         adaptyProfileId: adaptyProfileId,
-                        revenuecatProfileId: revenuecatProfileId,
-                        completion: completion)
-                }
-                let shownGuid = adoptGuidForShow(
-                    adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
-                SdkLogger.log("paywall.open_embedded_preloaded", context: ["paywallId": paywallId])
-                runEmbeddedPaywall(
-                    config: config,
-                    guid: shownGuid,
-                    completion: { result in
-                        PaywallPreloader.shared.refill(paywallId: paywallId)
-                        completion(result)
-                    },
-                    present: { onEvent in
-                        WebViewPaywallPresenter.present(paywall: paywall, onEvent: onEvent)
-                    })
+                        revenuecatProfileId: revenuecatProfileId))
+            else { return resolveNormally() }
+            // `take` отдаёт страницу, только если она загружена ровно под pageGuid.
+            // guid показа читается ещё раз (он становится настоящим), и между
+            // чтениями его мог сменить `identify` с другого потока, а временный мог
+            // оказаться привязан к другому профилю. Страница под одним guid, опрос
+            // доступа под другим — оплата легла бы не туда, где её ищут. Поэтому
+            // не совпали — страница выгружается, показ идёт обычным путём (там
+            // guid показа и адрес страницы — одно значение), после показа пейвол
+            // пополняется, как при промахе.
+            let shownGuid = adoptGuidForShow(
+                adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
+            guard GuidRules.mayShowPreloaded(pageGuid: pageGuid, shownGuid: shownGuid) else {
+                SdkLogger.log(
+                    "paywall.preload_guid_mismatch", context: ["paywallId": paywallId],
+                    level: "warn")
+                paywall.tearDown()
+                return resolveNormally()
             }
-            if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
-            return
+            SdkLogger.log("paywall.open_embedded_preloaded", context: ["paywallId": paywallId])
+            runEmbeddedPaywall(
+                config: config,
+                guid: shownGuid,
+                completion: { result in
+                    PaywallPreloader.shared.refill(paywallId: paywallId)
+                    completion(result)
+                },
+                present: { onEvent in
+                    WebViewPaywallPresenter.present(paywall: paywall, onEvent: onEvent)
+                })
         }
-        #endif
-
+        if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+        #else
         openEmbeddedResolvingURL(
             config: config,
             paywallId: paywallId,
@@ -548,6 +561,7 @@ public enum Web2App {
             adaptyProfileId: adaptyProfileId,
             revenuecatProfileId: revenuecatProfileId,
             completion: completion)
+        #endif
     }
 
     /// Обычный путь `openWebPaywallEmbedded(paywallId:)`: резолв URL по сети,

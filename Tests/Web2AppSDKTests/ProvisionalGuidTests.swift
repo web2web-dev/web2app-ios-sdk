@@ -325,3 +325,42 @@ final class GuidRulesReloadTests: XCTestCase {
             [])
     }
 }
+
+// MARK: - Один guid на показ предзагруженной страницы
+
+final class GuidRulesPreloadedShowTests: XCTestCase {
+    func testPageUnderSameGuidIsShown() {
+        XCTAssertTrue(GuidRules.mayShowPreloaded(pageGuid: "P", shownGuid: "P"))
+    }
+
+    /// Страница загружена под P, а guid показа (он же опрос доступа) — G:
+    /// оплата легла бы на P, опрос искал бы её на G. Такая страница не показывается.
+    func testPageUnderOtherGuidIsNotShown() {
+        XCTAssertFalse(GuidRules.mayShowPreloaded(pageGuid: "P", shownGuid: "G"))
+    }
+
+    /// Сценарий ревизии целиком на хранилищах: страница взята под временный P,
+    /// до показа `identify` записал G — guid показа G, страница не годится.
+    func testIdentifyBetweenLookupAndShowRejectsPage() {
+        let real = MemoryGuidStore()
+        let provisional = MemoryProvisionalStore(record("P"))
+        let life = GuidLifecycle(real: real, provisional: provisional, mint: { "new" })
+        let pageGuid = life.guidForPreloadedPages()
+        XCTAssertEqual(pageGuid, "P")
+        life.identified("G")
+        let shown = life.adoptForShow(adaptyProfileId: nil, revenuecatProfileId: nil)
+        XCTAssertEqual(shown.guid, "G")
+        XCTAssertFalse(GuidRules.mayShowPreloaded(pageGuid: pageGuid ?? "", shownGuid: shown.guid))
+    }
+
+    /// Временный P привязан к профилю a1, показ идёт с b1 — показ чеканит новый
+    /// guid, страница под P не годится.
+    func testProvisionalOfOtherProfileRejectsPage() {
+        let life = GuidLifecycle(
+            real: MemoryGuidStore(), provisional: MemoryProvisionalStore(record("P", adapty: "a1")),
+            mint: { "X" })
+        let pageGuid = life.guidForPreloadedPages() ?? ""
+        let shown = life.adoptForShow(adaptyProfileId: "b1", revenuecatProfileId: nil)
+        XCTAssertFalse(GuidRules.mayShowPreloaded(pageGuid: pageGuid, shownGuid: shown.guid))
+    }
+}
