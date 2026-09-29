@@ -209,11 +209,34 @@ final class GuidRulesShowTests: XCTestCase {
             GuidRules.ShowDecision(guid: "P", persist: true, discardedProvisional: false))
     }
 
-    /// Показ без profile-id (например, квиз) берёт временный как есть.
-    func testShowWithoutProfileAdoptsProvisional() {
+    /// Показ без profile-id (например, квиз) берёт временный guid, только если
+    /// тот ни к какому профилю не привязан.
+    func testShowWithoutProfileAdoptsUnboundProvisional() {
         XCTAssertEqual(
-            decide(provisional: record("P", adapty: "a1", revenuecat: "r1")),
+            decide(provisional: record("P")),
             GuidRules.ShowDecision(guid: "P", persist: true, discardedProvisional: false))
+        XCTAssertEqual(
+            decide(provisional: record("P"), adapty: "", revenuecat: "").guid, "P")
+    }
+
+    /// Контрольная волна: временный P привязан к X1 (старая копия страницы уже
+    /// записала на сервер P↔X1). Показ без profile-id не делает P настоящим —
+    /// иначе следующий пейвол с новым профилем X2 пошёл бы под P, сервер молча
+    /// отклонил бы X2, и оплата ушла бы профилю X1. Чеканится новый guid.
+    func testShowWithoutProfileRejectsBoundProvisional() {
+        for bound in [record("P", adapty: "X1"), record("P", revenuecat: "R1"),
+                      record("P", adapty: "X1", revenuecat: "R1")] {
+            XCTAssertEqual(
+                decide(provisional: bound),
+                GuidRules.ShowDecision(guid: "new", persist: true, discardedProvisional: true))
+            XCTAssertEqual(decide(provisional: bound, adapty: "", revenuecat: "").guid, "new")
+        }
+    }
+
+    /// Показ с profile-id — как раньше: передан хоть один и он совпал — временный берётся.
+    func testShowWithMatchingPartialProfileAdoptsBoundProvisional() {
+        XCTAssertEqual(
+            decide(provisional: record("P", adapty: "X1", revenuecat: "R1"), adapty: "X1").guid, "P")
     }
 
     /// Починка 3: временный привязан к другому профилю, чем передан в показ, —
@@ -292,6 +315,24 @@ final class GuidLifecycleTests: XCTestCase {
         XCTAssertEqual(d.guid, "X")
         XCTAssertEqual(real.value, "X")
         XCTAssertNil(provisional.value)
+    }
+
+    /// Сценарий контрольной волны целиком: предзагрузка с X1 → вход в аккаунт (X2)
+    /// → квиз без profile-id → пейвол с X2. Настоящим становится НЕ P.
+    func testQuizWithoutProfileAfterLoginDoesNotAdoptBoundProvisional() {
+        let real = MemoryGuidStore()
+        let provisional = MemoryProvisionalStore()
+        var next = 0
+        let life = GuidLifecycle(
+            real: real, provisional: provisional, mint: { next += 1; return "G\(next)" })
+        let p = life.preload(adaptyProfileId: "X1", revenuecatProfileId: nil).guid
+        let quiz = life.adoptForShow(adaptyProfileId: nil, revenuecatProfileId: nil)
+        XCTAssertNotEqual(quiz.guid, p)
+        XCTAssertEqual(real.value, quiz.guid)
+        XCTAssertNil(provisional.value)
+        let paywall = life.adoptForShow(adaptyProfileId: "X2", revenuecatProfileId: nil)
+        XCTAssertEqual(paywall.guid, quiz.guid)
+        XCTAssertNotEqual(paywall.guid, p)
     }
 
     /// Опознание: guid пользователя — настоящий, временный стёрт.

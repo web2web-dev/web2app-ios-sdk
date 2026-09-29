@@ -44,6 +44,9 @@ struct ProvisionalGuid: Equatable {
             || Self.differs(stored: self.revenuecatProfileId, passed: revenuecatProfileId)
     }
 
+    /// Привязан ли хоть к одному профилю.
+    var isBound: Bool { adaptyProfileId != nil || revenuecatProfileId != nil }
+
     /// Дописать переданные profile-id в пустые места; занятые не меняются.
     func filling(adaptyProfileId: String?, revenuecatProfileId: String?) -> ProvisionalGuid {
         ProvisionalGuid(
@@ -189,8 +192,12 @@ enum GuidRules {
     /// guid в момент показа — тот, что станет настоящим.
     /// - Есть настоящий — он (Keychain эта логика не меняет).
     /// - Есть временный и он НЕ привязан к другому профилю, чем передан в показ, — он:
-    ///   под него уже загружены фоновые страницы. Показ без profile-id (например, квиз)
-    ///   берёт временный как есть.
+    ///   под него уже загружены фоновые страницы.
+    /// - Показ без единого profile-id (например, квиз) берёт временный, только если
+    ///   тот ни к какому профилю не привязан: старая копия страницы могла уже
+    ///   записать на сервер связку «временный guid ↔ прежний профиль», и после
+    ///   входа в аккаунт следующий пейвол с новым профилем пошёл бы под этот guid —
+    ///   сервер молча отклонил бы новый профиль, оплата ушла бы прежнему.
     /// - Иначе — новый, как было до предзагрузки.
     static func show(
         saved: String?,
@@ -202,7 +209,11 @@ enum GuidRules {
         if let saved {
             return ShowDecision(guid: saved, persist: false, discardedProvisional: false)
         }
+        let noProfilePassed =
+            ProvisionalGuid.nonEmpty(adaptyProfileId) == nil
+            && ProvisionalGuid.nonEmpty(revenuecatProfileId) == nil
         if let provisional,
+            !(noProfilePassed && provisional.isBound),
             !provisional.isBoundToOtherProfile(
                 adaptyProfileId: adaptyProfileId, revenuecatProfileId: revenuecatProfileId)
         {
