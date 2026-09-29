@@ -719,7 +719,17 @@ public enum Web2App {
 
     /// Выгрузить все предзагруженные пейволы (например, при логауте: страницы
     /// загружены с email / profile-id прежнего пользователя).
+    ///
+    /// С 0.8.1 заодно стирается временный guid неопознанного пользователя (и его
+    /// привязка к profile-id): страница уже связала его на сервере с профилем
+    /// прежнего пользователя, и следующий пользователь на этом телефоне получит
+    /// новый. Настоящий guid (Keychain) не трогается — как и раньше.
     public static func clearPreloadedPaywalls() {
+        // Стираем сразу, с потока вызова (UserDefaults потокобезопасен): следующий
+        // preloadPaywalls, даже позванный до выгрузки страниц на главном потоке,
+        // уже не возьмёт прежний временный guid.
+        guidLifecycle.clearProvisional()
+        SdkLogger.log("paywall.preload_clear")
         #if canImport(UIKit) && canImport(WebKit)
         let run = { PaywallPreloader.shared.clear() }
         if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }

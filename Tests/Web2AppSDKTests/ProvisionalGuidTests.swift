@@ -364,3 +364,43 @@ final class GuidRulesPreloadedShowTests: XCTestCase {
         XCTAssertFalse(GuidRules.mayShowPreloaded(pageGuid: pageGuid, shownGuid: shown.guid))
     }
 }
+
+// MARK: - Выход из учётной записи (clearPreloadedPaywalls)
+
+final class GuidLifecycleClearTests: XCTestCase {
+    /// Выход стирает временный guid вместе с привязкой к профилю; настоящий
+    /// guid в Keychain не трогается (прежнее поведение).
+    func testClearProvisionalKeepsRealGuid() {
+        let real = MemoryGuidStore("G")
+        let provisional = MemoryProvisionalStore(record("P", adapty: "a1"))
+        GuidLifecycle(real: real, provisional: provisional, mint: { "new" }).clearProvisional()
+        XCTAssertNil(provisional.value)
+        XCTAssertEqual(real.value, "G")
+    }
+
+    /// Сценарий ревизии: пользователь А (профиль a1) вышел, вошёл Б (b1) и
+    /// предзагрузил без профиля — всё равно новый guid, а не P пользователя А.
+    func testAfterClearNextUserGetsFreshProvisional() {
+        let provisional = MemoryProvisionalStore()
+        var next = 0
+        let life = GuidLifecycle(
+            real: MemoryGuidStore(), provisional: provisional,
+            mint: { next += 1; return "P\(next)" })
+        XCTAssertEqual(life.preload(adaptyProfileId: "a1", revenuecatProfileId: nil).guid, "P1")
+        life.clearProvisional()
+        let d = life.preload(adaptyProfileId: nil, revenuecatProfileId: nil)
+        XCTAssertEqual(d.guid, "P2")
+        XCTAssertEqual(d.source, .minted)
+    }
+
+    /// Стирание — через настоящее хранилище UserDefaults, а не только в памяти.
+    func testClearProvisionalEmptiesUserDefaultsStore() {
+        let suite = "web2app.tests.clear.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ProvisionalGuidStore(defaults: defaults)
+        store.save(record("P", adapty: "a1"))
+        GuidLifecycle(real: MemoryGuidStore(), provisional: store, mint: { "new" }).clearProvisional()
+        XCTAssertNil(ProvisionalGuidStore(defaults: defaults).load())
+    }
+}
