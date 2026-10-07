@@ -40,7 +40,13 @@ Web2App.configure(
 //    (AppsFlyer / Adjust). Берите его из поля `deep_link_sub1` (запасной дубль —
 //    `af_sub1`), а НЕ из `deep_link_value`: там у нас константа `handoff`, и с ней
 //    опознание молча не сработает. Если атрибуции нет — восстановление по email.
-Web2App.identify(deepLinkValue: attributionValue) { result in
+//    Код передавайте, только когда он НОВЫЙ (MMP часто отдаёт одно и то же
+//    значение при каждом запуске): `identify` с кодом каждый раз ходит в сеть —
+//    без сети вернёт `.network`, и каждый вызов тратит запрос из лимита
+//    10 обменов в минуту. Уже опознан — `Web2App.currentGuid()` не nil, повторно
+//    звать не нужно; при `.network` продолжайте с `currentGuid()`.
+let code = Web2App.currentGuid() == nil ? attributionValue : nil
+Web2App.identify(deepLinkValue: code) { result in
     switch result {
     case .success(let guid):
         print("пользователь опознан: \(guid)")
@@ -53,9 +59,14 @@ Web2App.identify(deepLinkValue: attributionValue) { result in
 }
 
 // 3. Проверка доступа — в любой момент, чтобы открыть/закрыть платный контент.
-Web2App.entitlement { grant in
-    if grant?.isActive == true {
-        // разблокировать доступ
+Web2App.entitlements { result in
+    switch result {
+    case .success(let e):
+        if e.activeGrant != nil { /* разблокировать доступ */ } else { /* закрыть */ }
+    case .failure(.network), .failure(.http):
+        break // нет связи с сервером — НЕ отнимайте доступ, спросите позже
+    case .failure:
+        break // нет configure / guid ещё не сохранён
     }
 }
 ```
@@ -92,12 +103,13 @@ Web2App.entitlement { grant in
 | Метод | Назначение |
 |---|---|
 | `Web2App.configure(projectId:baseUrl:)` | Инициализация SDK. Вызвать один раз при старте. |
-| `Web2App.identify(deepLinkValue:completion:)` | Опознать пользователя при первом запуске. Порядок: сохранённый `guid` → код из диплинка → **опознание по отпечатку устройства (0.7.0)** → сигнал «нужен email». |
+| `Web2App.identify(deepLinkValue:completion:)` | Опознать пользователя. Передан код из ссылки — он обменивается **всегда**, даже если `guid` уже сохранён, и `currentGuid()` может смениться (передайте новый своему серверу); код уже погашен, а `guid` сохранён — успех с сохранённым. Без кода: сохранённый `guid` → **опознание по отпечатку устройства (0.7.0)** → сигнал «нужен email». |
 | `Web2App.requestEmailRecovery(_:completion:)` | Запросить восстановление по email — мы отправим пользователю ссылку-магнит. |
-| `Web2App.entitlement(completion:)` | Получить текущий доступ пользователя (`grant.isActive`, `level`, `status`, `expiresAt`, `testMode` — см. «Тестовый режим проекта»). |
+| `Web2App.entitlements(completion:)` | Все записи о доступе (`grants`, `activeGrant`, `testMode`) с различимой причиной отказа: «записей нет» — успех с пустым списком; `.network` / `.http` — не удалось спросить (доступ не отнимать); `.notConfigured`, `.noGuid`, `.badResponse`. В `switch` по `EntitlementsError` всегда добавляйте общую ветку (`case .failure:` или `default:`): в следующих версиях могут появиться новые причины, и полный перечень без общей ветки перестанет собираться. |
+| `Web2App.entitlement(completion:)` | Текущий доступ одной записью: первая действующая, а если действующих нет — самая новая (`grant.isActive`, `level`, `status`, `expiresAt`, `testMode` — см. «Тестовый режим проекта»). `nil` — и «записей нет», и «нет сети»: чтобы различать, зовите `entitlements`. |
 | `Web2App.currentGuid()` | Текущий идентификатор пользователя (если уже опознан). |
 | `Web2App.openWebPaywall(paywallURL:email:completion:)` | Показать веб-пейвол внутри приложения; completion вернёт активный доступ после оплаты (guid-поллинг). |
-| `Web2App.handleReturnURL(_:)` | Обработать возвратный deep-link кнопки «Закрыть» с веб-пейвола (Safari-режим): закрывает шторку и ускоряет получение доступа. |
+| `Web2App.handleReturnURL(_:)` / `handleReturnURL(_:completion:)` | Обработать возвратный deep-link `<схема>://handoff?code=…` (кнопки «Закрыть» и «альтернативный способ» на экране после оплаты): окно пейвола SDK открыто — закрывает его и не тратит код, если доступ по сохранённому guid есть; окна нет или доступа нет (платили в обычном браузере) — обменивает код. Перегрузка с `completion` отдаёт доступ. |
 | `Web2App.openWebPaywall(paywallId:email:completion:)` | Открыть пейвол по его ID — публичный URL резолвится автоматически. |
 | `Web2App.openWebPaywallEmbedded(paywallURL:/paywallId:email:completion:)` | Встроенный WebView-режим: авто-закрытие при успехе оплаты, результат — типизированный `PaywallResult` (paid / notPaid / pending / unavailable). URL-схема не нужна. |
 | `Web2App.preloadPaywalls(paywallIds:email:)` | **(0.8.0)** Заранее загрузить встроенные пейволы в фоне — потом `openWebPaywallEmbedded(paywallId:)` показывает их мгновенно; с 0.8.1 — и неопознанному пользователю. См. «Мгновенный показ пейвола». |
@@ -317,15 +329,30 @@ SDK допишет их в URL страницы параметрами `adapty_p
 // AppDelegate
 func application(_ app: UIApplication, open url: URL,
                  options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
-    if Web2App.handleReturnURL(url) { return true }
+    let handled = Web2App.handleReturnURL(url) { grant in
+        if grant?.isActive == true { /* открыть премиум */ }
+    }
+    if handled { return true }
     // ... ваши остальные deep-link'и
     return false
 }
 ```
 
-SDK закроет шторку веб-пейвола и немедленно запустит проверку доступа — completion
-исходного `openWebPaywall` получит активный грант, пользователь возвращается уже
-«платным». Без регистрации схемы всё тоже работает: пользователь закрывает шторку
+Два случая:
+
+- **Покупатель платил в окне SDK** (`openWebPaywall`) — SDK закроет шторку, completion
+  исходного `openWebPaywall` получит активный грант. Код из ссылки при этом **не
+  тратится**, если по сохранённому guid нашлась действующая запись: он остаётся
+  живым для письма «оплата прошла» (например, чтобы открыть приложение на втором
+  устройстве). Действующей записи нет (покупатель бросил окно и оплатил в обычном
+  браузере) — SDK обменивает код, как во втором случае; доступ тогда получают и
+  `completion` возвратного метода, и `completion` исходного `openWebPaywall`
+  (каждый ровно один раз).
+- **Окна SDK нет** (покупатель прошёл воронку в обычном браузере и нажал кнопку на
+  экране после оплаты) — SDK обменяет код так же, как `identify(deepLinkValue:)`
+  (`currentGuid()` может смениться), и `completion` получит доступ по новому guid.
+
+Без регистрации схемы оплата в окне SDK тоже работает: пользователь закрывает шторку
 сам, доступ приходит тем же guid-поллингом.
 
 ### Настройка возврата: что передать владельцу воронки (WEB-802)
@@ -370,15 +397,19 @@ func handleHandoffLink(_ url: URL) {
     Web2App.identify(deepLinkValue: url.pathComponents[2]) { result in
         switch result {
         case .success:
+            // Код обменивается всегда — guid мог смениться: передайте
+            // Web2App.currentGuid() своему серверу, если храните его там.
             Web2App.entitlement { grant in
                 DispatchQueue.main.async {
                     if grant?.isActive == true { /* открыть премиум */ }
                 }
             }
+        case .failure(.network):
+            break // нет сети — повторите позже
         case .failure:
-            // Код одноразовый (повторный тап = ошибка). guid уже мог быть
-            // сохранён ранее — сперва проверьте entitlement, и только при
-            // пустом ответе показывайте Web2App.requestEmailRecovery(email).
+            // Код отвергнут, а guid ещё не сохранён (повторный переход по той же
+            // ссылке при сохранённом guid — это успех, не ошибка).
+            // Предложите Web2App.requestEmailRecovery(email).
             break
         }
     }
@@ -394,8 +425,8 @@ func handleHandoffLink(_ url: URL) {
 
 Не путать с кнопкой «Закрыть»: её ссылка — кастомная схема
 `<схема>://handoff?code=...`, она обрабатывается `handleReturnURL(_:)` (выше) и
-код намеренно не тратит. Ссылка из письма — Universal Link с кодом в пути, её
-обрабатывает `identify(deepLinkValue:)` и код расходует.
+тратит код, только если окна SDK нет или доступа по сохранённому guid нет. Ссылка из письма — Universal Link с кодом в
+пути, её обрабатывает `identify(deepLinkValue:)` и код расходует.
 
 ---
 

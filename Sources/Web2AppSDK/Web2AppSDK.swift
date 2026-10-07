@@ -55,6 +55,24 @@ public enum Web2App {
         #endif
     }
 
+    /// Обмен кода из ссылки на guid: `(конфиг, код, (результат, HTTP-код))`.
+    /// Подменяется в юнит-тестах (сеть не нужна); в боевой сборке — всегда
+    /// `AttributionResolver.resolveTokenWithStatus`.
+    static var codeExchanger:
+        (Web2AppConfig, String, @escaping (Result<String, Web2AppError>, Int) -> Void) -> Void = {
+            config, code, completion in
+            AttributionResolver(config: config).resolveTokenWithStatus(code, completion: completion)
+        }
+
+    /// Запрос права по guid в возвратном методе: `(конфиг, guid, ответ)`.
+    /// Подменяется в юнит-тестах (доработка 4: тест подключения возвратного метода);
+    /// в боевой сборке — всегда `EntitlementClient.fetch`.
+    static var grantFetcher:
+        (Web2AppConfig, String, @escaping (EntitlementGrant?) -> Void) -> Void = {
+            config, guid, completion in
+            EntitlementClient(config: config).fetch(guid: guid, completion: completion)
+        }
+
     /// Слушатель событий воронки (`setFunnelEventListener`). Под замком —
     /// пишется с потока интегратора, читается с потока моста (аналог
     /// `@Volatile` в Android-SDK).
@@ -124,11 +142,17 @@ public enum Web2App {
 
     // MARK: identify (guid-резолв первого запуска)
 
-    /// Резолвит и персистит `guid`. Порядок (первый запуск):
-    ///  1. Уже есть сохранённый guid (Keychain) → возвращаем его (steady-state).
-    ///  2. `deepLinkValue` (из MMP-callback интегратора / Install Referrer) → resolve → guid. **[POC-1]**
-    ///  3. Промах → email-fallback (caller показывает экран, затем `resolveEmail`). НЕ падаем молча.
-    /// На успехе (любая ветка первого запуска) — шлём APP_INSTALLED-продюсер (best-effort).
+    /// Резолвит и персистит `guid`. Порядок:
+    ///  1. Передан непустой `deepLinkValue` (код из ссылки возврата / письма / токен
+    ///     MMP) → **всегда** обмен кода, даже если guid уже сохранён (WEB-2479):
+    ///     успех → новый guid перезаписывает сохранённый (`currentGuid()` может
+    ///     смениться — передайте его своему серверу); сервер отверг код (погашен или
+    ///     просрочен, 404), а guid сохранён → успех с сохранённым guid (повторный
+    ///     переход по той же ссылке — не ошибка, в журнал
+    ///     `identify.code_rejected_cached_guid`); сбой сети → `.network`.
+    ///  2. Кода нет и guid сохранён (Keychain) → он, без сети (steady-state).
+    ///  3. Кода нет и guid нет → опознание по отпечатку, промах → email-fallback.
+    /// На успешном обмене и совпадении отпечатка — APP_INSTALLED-продюсер (best-effort).
     public static func identify(
         deepLinkValue: String?,
         completion: @escaping (Result<String, Web2AppError>) -> Void
@@ -138,63 +162,88 @@ public enum Web2App {
             return completion(.failure(.notConfigured))
         }
 
+        if let code = ReturnCodeRules.code(from: deepLinkValue) {
+            exchangeCode(code, config: config) { outcome in
+                switch outcome {
+                case .exchanged(let guid), .keptCached(let guid):
+                    completion(.success(guid))
+                case .failed(let err):
+                    completion(.failure(err))
+                }
+            }
+            return
+        }
+
         if let existing = guidStore.load() {
             SdkLogger.shared.setGuid(existing)
             SdkLogger.log("identify.cached_guid")
             return completion(.success(existing))
         }
 
-        guard let token = deepLinkValue, !token.isEmpty else {
-            // WEB-1213: промах MMP/referrer → СНАЧАЛА пробуем опознание по
-            // отпечатку устройства (веб-страница оставила сигналы в момент
-            // ухода в стор). Совпадение уверенное и единственное → guid наш;
-            // любой промах → прежний email-фолбэк, поведение не хуже старого.
-            //
-            // WEB-1384: попытки ограничены окном 2 часа с ПЕРВОЙ неудачи —
-            // ровно столько живёт слепок на сервере; дальше в сеть не ходим
-            // никогда (лишняя работа при каждом запуске, ответ известен).
-            guard FingerprintResolver.isWithinAttemptWindow(
-                firstFailedAt: FingerprintResolver.AttemptGate.firstFailedAt(),
-                now: Date()
-            ) else {
-                SdkLogger.log(
-                    "identify.fingerprint_window_expired",
-                    "окно попыток отпечатка истекло — сразу email-экран")
-                return completion(.failure(.needsEmailFallback))
-            }
-            SdkLogger.log("identify.fingerprint_attempt")
-            FingerprintResolver(config: config).resolve { guid, matchMethod in
-                if let guid {
-                    didIdentify(guid)
-                    SdkLogger.log(
-                        "identify.fingerprint_matched",
-                        context: ["matchMethod": matchMethod ?? "unknown"])
-                    AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
-                    completion(.success(guid))
-                } else {
-                    FingerprintResolver.AttemptGate.markFailure()
-                    SdkLogger.log(
-                        "identify.needs_email_fallback",
-                        "ни MMP-токена, ни совпадения отпечатка — нужен email-экран",
-                        level: "warn")
-                    completion(.failure(.needsEmailFallback))
-                }
-            }
-            return
+        // WEB-1213: промах MMP/referrer → СНАЧАЛА пробуем опознание по
+        // отпечатку устройства (веб-страница оставила сигналы в момент
+        // ухода в стор). Совпадение уверенное и единственное → guid наш;
+        // любой промах → прежний email-фолбэк, поведение не хуже старого.
+        //
+        // WEB-1384: попытки ограничены окном 2 часа с ПЕРВОЙ неудачи —
+        // ровно столько живёт слепок на сервере; дальше в сеть не ходим
+        // никогда (лишняя работа при каждом запуске, ответ известен).
+        guard FingerprintResolver.isWithinAttemptWindow(
+            firstFailedAt: FingerprintResolver.AttemptGate.firstFailedAt(),
+            now: Date()
+        ) else {
+            SdkLogger.log(
+                "identify.fingerprint_window_expired",
+                "окно попыток отпечатка истекло — сразу email-экран")
+            return completion(.failure(.needsEmailFallback))
         }
+        SdkLogger.log("identify.fingerprint_attempt")
+        FingerprintResolver(config: config).resolve { guid, matchMethod in
+            if let guid {
+                didIdentify(guid)
+                SdkLogger.log(
+                    "identify.fingerprint_matched",
+                    context: ["matchMethod": matchMethod ?? "unknown"])
+                AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
+                completion(.success(guid))
+            } else {
+                FingerprintResolver.AttemptGate.markFailure()
+                SdkLogger.log(
+                    "identify.needs_email_fallback",
+                    "ни MMP-токена, ни совпадения отпечатка — нужен email-экран",
+                    level: "warn")
+                completion(.failure(.needsEmailFallback))
+            }
+        }
+    }
 
+    /// WEB-2479 — обмен кода из ссылки (общий для `identify` и возвратного метода).
+    /// Итог — по `ReturnCodeRules.outcome`; побочные эффекты (перезапись guid,
+    /// APP_INSTALLED, журнал) — здесь.
+    private static func exchangeCode(
+        _ code: String,
+        config: Web2AppConfig,
+        completion: @escaping (CodeExchangeOutcome) -> Void
+    ) {
         SdkLogger.log("identify.resolving_token")
-        AttributionResolver(config: config).resolveToken(token) { result in
-            switch result {
-            case .success(let guid):
+        codeExchanger(config, code) { result, httpStatus in
+            let outcome = ReturnCodeRules.outcome(
+                result, httpStatus: httpStatus, cachedGuid: guidStore.load())
+            switch outcome {
+            case .exchanged(let guid):
                 didIdentify(guid)
                 SdkLogger.log("identify.resolved")
                 AppCallbackProducer(config: config).reportAppInstalled(guid: guid)
-                completion(.success(guid))
-            case .failure(let err):
+            case .keptCached(let guid):
+                SdkLogger.shared.setGuid(guid)
+                SdkLogger.log(
+                    "identify.code_rejected_cached_guid",
+                    "сервер отверг код (погашен или просрочен) — отдан сохранённый guid",
+                    level: "warn")
+            case .failed(let err):
                 SdkLogger.error("identify.resolve_failed", String(describing: err))
-                completion(.failure(err))
             }
+            completion(outcome)
         }
     }
 
@@ -226,7 +275,10 @@ public enum Web2App {
 
     // MARK: entitlement (R1 passthrough)
 
-    /// Читает право по сохранённому guid — passthrough `GET /public/entitlement?guid=`.
+    /// Читает право по сохранённому guid — `GET /public/entitlement?guid=`: первая
+    /// действующая запись ответа, а если действующих нет — самая новая (WEB-2480).
+    /// `nil` означает И «записей нет», И «не удалось спросить» (сеть, сервер) —
+    /// чтобы различать, зовите `entitlements(completion:)`.
     public static func entitlement(
         completion: @escaping (EntitlementGrant?) -> Void
     ) {
@@ -242,6 +294,49 @@ public enum Web2App {
                 "entitlement.result",
                 context: ["status": grant?.status ?? "none"])
             completion(grant)
+        }
+    }
+
+    /// WEB-2480 — все записи о доступе по сохранённому guid с различимой причиной
+    /// отказа. В отличие от `entitlement`, «нет записей» (успех с пустым `grants`)
+    /// здесь отличается от «не удалось спросить» (`.network`, `.http`) — при
+    /// сбое сети не отнимайте доступ, спросите позже. Результат — на главном потоке.
+    ///
+    /// ```swift
+    /// Web2App.entitlements { result in
+    ///     switch result {
+    ///     case .success(let e): e.activeGrant != nil ? unlock() : lock()
+    ///     case .failure(.network), .failure(.http): break // оставить как есть
+    ///     case .failure: lock()
+    ///     }
+    /// }
+    /// ```
+    public static func entitlements(
+        completion: @escaping (Result<Entitlements, EntitlementsError>) -> Void
+    ) {
+        let deliver: (Result<Entitlements, EntitlementsError>) -> Void = { result in
+            DispatchQueue.main.async { completion(result) }
+        }
+        guard let config else {
+            SdkLogger.log("entitlements.skipped", "нет configure", level: "warn")
+            return deliver(.failure(.notConfigured))
+        }
+        guard let guid = guidStore.load() else {
+            SdkLogger.log("entitlements.skipped", "нет сохранённого guid", level: "warn")
+            return deliver(.failure(.noGuid))
+        }
+        SdkLogger.log("entitlements.fetch")
+        EntitlementClient(config: config).fetchAll(guid: guid) { result in
+            switch result {
+            case .success(let e):
+                SdkLogger.log(
+                    "entitlements.result",
+                    context: ["count": String(e.grants.count),
+                              "active": String(e.activeGrant != nil)])
+            case .failure(let err):
+                SdkLogger.error("entitlements.failed", String(describing: err))
+            }
+            deliver(result)
         }
     }
 
@@ -314,20 +409,23 @@ public enum Web2App {
         let completeOnMain: (EntitlementGrant?) -> Void = { grant in
             DispatchQueue.main.async { completion(grant) }
         }
+        // Доработка 3 (WEB-2479): ожидание регистрируется при показе — результат
+        // возвратного метода (в т.ч. после обмена кода при открытом окне) приходит
+        // и сюда; ответ ровно один раз.
+        let wait = registerPaywallWait { grant in
+            SdkLogger.log(
+                "paywall.poll_result",
+                context: ["active": String(grant != nil)])
+            completeOnMain(grant)
+        }
         WebPaywallPresenter.present(url: url) {
-            // Браузер закрыт → поллим право по нашему guid (Adapty getProfile-стиль):
-            // 30 попыток × 2с ≈ 60с окна, покрывает Stripe webhook→grant задержку.
+            // Браузер закрыт → поллим право (Adapty getProfile-стиль): 30 попыток × 2с
+            // ≈ 60с окна, покрывает Stripe webhook→grant задержку. guid — текущий из
+            // хранилища: возвратный метод мог обменять код и сменить его.
             SdkLogger.log("paywall.browser_closed")
-            WebPaywallLauncher.pollForActiveGrant(
-                interval: 2.0,
-                maxAttempts: 30,
-                fetch: { cb in client.fetch(guid: guid, completion: cb) }
-            ) { grant in
-                SdkLogger.log(
-                    "paywall.poll_result",
-                    context: ["active": String(grant != nil)])
-                completeOnMain(grant)
-            }
+            startPaywallPolling(
+                wait, fallbackGuid: guid, interval: 2.0, maxAttempts: 30,
+                fetch: { g, cb in client.fetch(guid: g, completion: cb) })
         }
         #else
         // Не-UIKit платформа (напр. macOS юнит-тесты): презентации нет — no-op.
@@ -828,28 +926,104 @@ public enum Web2App {
         #endif
     }
 
-    // MARK: handleReturnURL (кнопка «Закрыть» на success-экране веб-пейвола)
+    // MARK: handleReturnURL (кнопки «Закрыть» / «альтернативный способ» на success-экране)
 
-    /// Обработчик возвратного deep-link'а из веб-пейвола: кнопка «Закрыть» на
-    /// success-экране ведёт на `<схема-прилки>://handoff?code=...` (WEB-800).
-    /// Интегратор: (1) регистрирует свою схему (CFBundleURLTypes) и указывает её
-    /// в кабинете проекта (bridgeConfig.returnScheme); (2) зовёт этот метод из
-    /// своего URL-обработчика (`application(_:open:)` / SceneDelegate
-    /// `openURLContexts`) для ВСЕХ входящих URL — чужие вернут false.
+    /// Обработчик возвратного deep-link'а из веб-пейвола: кнопки «Закрыть» и
+    /// «Открыть приложение (альтернативный способ)» на success-экране ведут на
+    /// `<схема-прилки>://handoff?code=...` (WEB-800). Интегратор: (1) регистрирует
+    /// свою схему (CFBundleURLTypes) и указывает её в кабинете проекта
+    /// (bridgeConfig.returnScheme); (2) зовёт этот метод из своего URL-обработчика
+    /// (`application(_:open:)` / SceneDelegate `openURLContexts`) для ВСЕХ
+    /// входящих URL — чужие вернут false.
     ///
-    /// Что делает при распознавании: закрывает открытую шторку веб-пейвола —
-    /// это триггерит уже существующий guid-поллинг права, и completion исходного
-    /// `openWebPaywall` получает активный грант (юзер вернулся «уже платным»).
-    /// `code` из ссылки намеренно НЕ консьюмится: доступ приходит по guid, а
-    /// токен остаётся валидным для магик-линк письма.
+    /// Что делает при распознавании (WEB-2479):
+    ///  - **окно оплаты библиотеки открыто** (`openWebPaywall` / встроенный показ) —
+    ///    закрывает его и проверяет право по guid библиотеки (до ~10 с). Действующая
+    ///    запись есть — `code` НЕ тратится: он остаётся живым для письма «оплата
+    ///    прошла» (открыть приложение на втором устройстве). Действующей нет, а
+    ///    `code` в адресе есть (покупатель бросил окно и оплатил в обычном браузере) —
+    ///    `code` обменивается, как ниже;
+    ///  - **окна нет** (покупатель платил в обычном браузере или пришёл из письма) —
+    ///    обменивает `code` тем же путём, что `identify(deepLinkValue:)` (guid может
+    ///    смениться). Чтобы получить право, зовите перегрузку с `completion`.
     @discardableResult
     public static func handleReturnURL(_ url: URL) -> Bool {
+        handleReturn(url, completion: nil)
+    }
+
+    /// То же, что `handleReturnURL(_:)`, плюс результат: право по guid после
+    /// возврата (`nil` — права нет за ~10 с или обмен кода не удался). Приходит
+    /// на главный поток ровно один раз; для чужого адреса (`false`) — не приходит.
+    @discardableResult
+    public static func handleReturnURL(
+        _ url: URL, completion: @escaping (EntitlementGrant?) -> Void
+    ) -> Bool {
+        handleReturn(url, completion: completion)
+    }
+
+    private static func handleReturn(
+        _ url: URL, completion: ((EntitlementGrant?) -> Void)?
+    ) -> Bool {
         guard WebPaywallLauncher.isHandoffReturnURL(url) else { return false }
         SdkLogger.log("return_url.recognized")
-        #if canImport(UIKit) && canImport(SafariServices)
-        WebPaywallPresenter.dismissActive()
-        #endif
+        let deliver: (EntitlementGrant?) -> Void = { grant in
+            guard let completion else { return }
+            DispatchQueue.main.async { completion(grant) }
+        }
+        guard let config else {
+            SdkLogger.error("return_url.not_configured")
+            deliver(nil)
+            return true
+        }
+        let windowOpen = isLibraryWindowOpen()
+        SdkLogger.log("return_url.action", context: ["windowOpen": String(windowOpen)])
+        let flow = ReturnURLFlow(
+            windowOpen: windowOpen,
+            dismissWindow: {
+                #if canImport(UIKit) && canImport(SafariServices)
+                WebPaywallPresenter.dismissActive()
+                #endif
+            },
+            exchange: { code, cb in exchangeCode(code, config: config, completion: cb) },
+            checkStoredGuid: { cb in
+                // Решение 07.10: от этой проверки зависит, сгорит ли код, — поэтому
+                // она ходит в сеть и у старой перегрузки без колбэка.
+                guard let guid = guidStore.load() else { return cb(nil) }
+                WebPaywallLauncher.pollForActiveGrant(
+                    interval: 1.0,
+                    maxAttempts: 10,
+                    fetch: { done in grantFetcher(config, guid, done) },
+                    completion: cb)
+            },
+            pollStoredGuid: { cb in
+                // Старая перегрузка без колбэка: право никто не ждёт — в сеть не ходим.
+                guard completion != nil, let guid = guidStore.load() else { return cb(nil) }
+                // Короткий опрос, как у Android handleReturnUrl: 10 × 1 с.
+                WebPaywallLauncher.pollForActiveGrant(
+                    interval: 1.0,
+                    maxAttempts: 10,
+                    fetch: { done in grantFetcher(config, guid, done) },
+                    completion: cb)
+            })
+        flow.run(code: ReturnCodeRules.code(fromReturnURL: url)) { grant in
+            // Доработка 3: результат возврата получает и незавершённый
+            // openWebPaywall — каждый колбэк ровно один раз (как на Android).
+            offerToPaywallWaits(grant)
+            deliver(grant)
+        }
         return true
+    }
+
+    /// Окно оплаты библиотеки на экране (браузерное или встроенное).
+    private static func isLibraryWindowOpen() -> Bool {
+        var open = false
+        #if canImport(UIKit) && canImport(SafariServices)
+        open = open || WebPaywallPresenter.isPresenting
+        #endif
+        #if canImport(UIKit) && canImport(WebKit)
+        open = open || WebViewPaywallPresenter.isPresenting
+        #endif
+        return open
     }
 
     #if DEBUG

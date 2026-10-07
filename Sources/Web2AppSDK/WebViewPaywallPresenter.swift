@@ -42,6 +42,10 @@ final class WebViewPaywallPresenter: NSObject, WKScriptMessageHandler, WKNavigat
     /// Ревью 0.4.1: guard от одновременных показов (см. WebPaywallPresenter).
     private static weak var active: WebViewPaywallPresenter?
 
+    /// WEB-2479: встроенное окно оплаты сейчас на экране — возвратный метод
+    /// тогда код не тратит.
+    static var isPresenting: Bool { active != nil }
+
     private init(paywall: PaywallWebView, onEvent: @escaping (BridgeEvent?) -> Void) {
         self.paywall = paywall
         self.onEvent = onEvent

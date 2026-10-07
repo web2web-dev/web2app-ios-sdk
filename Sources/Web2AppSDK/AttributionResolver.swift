@@ -39,12 +39,22 @@ struct AttributionResolver {
     /// уже использован) = 404 `{"message":…,"error":…,"statusCode":404}`. Плоское `{"guid":…}`
     /// поддерживаем на совместимость со старыми/иными окружениями — см. `parseGuidResponse`.
     func resolveToken(_ token: String, completion: @escaping (Result<String, Web2AppError>) -> Void) {
+        resolveTokenWithStatus(token) { result, _ in completion(result) }
+    }
+
+    /// То же, что `resolveToken`, плюс HTTP-код ответа (0 — сеть/нет ответа).
+    /// WEB-2479: по коду отличаем «сервер отверг код» (404) от сбоя сервера —
+    /// только при 404 `identify` подставляет сохранённый guid (`ReturnCodeRules.outcome`).
+    func resolveTokenWithStatus(
+        _ token: String,
+        completion: @escaping (Result<String, Web2AppError>, Int) -> Void
+    ) {
         var comps = URLComponents(
             url: config.baseUrl.appendingPathComponent("public/handoff/resolve"),
             resolvingAgainstBaseURL: false
         )
         comps?.queryItems = [URLQueryItem(name: "code", value: token)]
-        guard let url = comps?.url else { return completion(.failure(.resolveFailed)) }
+        guard let url = comps?.url else { return completion(.failure(.resolveFailed), 0) }
         Self.fetchGuid(url: url, method: "GET", body: nil, completion: completion)
     }
 
@@ -100,7 +110,7 @@ struct AttributionResolver {
         url: URL,
         method: String,
         body: Data?,
-        completion: @escaping (Result<String, Web2AppError>) -> Void
+        completion: @escaping (Result<String, Web2AppError>, Int) -> Void
     ) {
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -109,16 +119,16 @@ struct AttributionResolver {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         URLSession.shared.dataTask(with: req) { data, resp, err in
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             if let err {
                 SdkLogger.error("resolve.network_error", err.localizedDescription)
-                return completion(.failure(.network(err.localizedDescription)))
+                return completion(.failure(.network(err.localizedDescription)), code)
             }
             guard let data, let guid = parseGuidResponse(data) else {
-                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 SdkLogger.error("resolve.failed", context: ["http": String(code)])
-                return completion(.failure(.resolveFailed))
+                return completion(.failure(.resolveFailed), code)
             }
-            completion(.success(guid))
+            completion(.success(guid), code)
         }.resume()
     }
 }

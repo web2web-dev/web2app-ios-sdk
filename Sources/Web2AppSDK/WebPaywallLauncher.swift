@@ -89,10 +89,14 @@ enum WebPaywallLauncher {
         interval: TimeInterval,
         maxAttempts: Int,
         fetch: @escaping (@escaping (EntitlementGrant?) -> Void) -> Void,
+        shouldContinue: @escaping () -> Bool = { true },
         completion: @escaping (EntitlementGrant?) -> Void
     ) {
         guard maxAttempts > 0 else { return completion(nil) }
         func attempt(_ n: Int) {
+            // Доработка 3: false — опрос тихо прекращается без completion
+            // (ответ уже отдан другим путём).
+            guard shouldContinue() else { return }
             fetch { grant in
                 if let grant, grant.isActive {
                     completion(grant)
@@ -124,6 +128,10 @@ final class WebPaywallPresenter: NSObject, SFSafariViewControllerDelegate,
     /// Последний открытый веб-пейвол — для программного закрытия по возвратному
     /// deep-link'у (`Web2App.handleReturnURL`). weak: presenter self-owning до finish.
     private static weak var active: WebPaywallPresenter?
+
+    /// WEB-2479: окно оплаты библиотеки сейчас открыто — возвратный метод тогда
+    /// только закрывает его и код не тратит.
+    static var isPresenting: Bool { active != nil }
 
     private init(onDismiss: @escaping () -> Void) {
         self.onDismiss = onDismiss
