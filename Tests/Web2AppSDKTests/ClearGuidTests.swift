@@ -51,6 +51,27 @@ final class ClearGuidTests: XCTestCase {
         XCTAssertEqual(results.count, 2)
     }
 
+    /// Старая форма 0.8.1 передаётся как значение (ссылка на функцию без вызова)
+    /// и собирается: для этого есть отдельная перегрузка без `force`.
+    func testOldIdentifyFormIsAssignableAsValue() {
+        let f: (String?, @escaping (Result<String, Web2AppError>) -> Void) -> Void =
+            Web2App.identify
+        let g = Web2App.identify(deepLinkValue:completion:)
+        var results: [Result<String, Web2AppError>] = []
+        f(nil) { results.append($0) }
+        g("tok") { results.append($0) }
+        XCTAssertEqual(results.count, 2)
+    }
+
+    /// Новая форма с `force` тоже передаётся как значение.
+    func testNewIdentifyFormIsAssignableAsValue() {
+        let h: (String?, Bool, @escaping (Result<String, Web2AppError>) -> Void) -> Void =
+            Web2App.identify
+        var result: Result<String, Web2AppError>?
+        h("tok", false) { result = $0 }
+        XCTAssertNotNil(result)
+    }
+
     /// Без `configure` `identify(force: true)` ничего не стирает: отказ
     /// `notConfigured` раньше сброса, как и любые другие шаги опознания.
     func testForcedIdentifyWithoutConfigureKeepsGuid() {

@@ -145,6 +145,18 @@ public enum Web2App {
     ///  3. Промах → email-fallback (caller показывает экран, затем `resolveEmail`). НЕ падаем молча.
     /// На успехе (любая ветка первого запуска) — шлём APP_INSTALLED-продюсер (best-effort).
     ///
+    /// Форма 0.8.1 — оставлена отдельной функцией, чтобы у интеграторов собиралась
+    /// и ссылка на неё как на значение (`let f = Web2App.identify(deepLinkValue:completion:)`).
+    /// Поведение — `identify(deepLinkValue:force: false, completion:)`.
+    public static func identify(
+        deepLinkValue: String?,
+        completion: @escaping (Result<String, Web2AppError>) -> Void
+    ) {
+        identify(deepLinkValue: deepLinkValue, force: false, completion: completion)
+    }
+
+    /// Опознание с выбором: `force: false` — то же, что форма без `force` (шаги выше).
+    ///
     /// `force: true` (0.9.0) — опознать заново: сначала сброс тем же путём, что
     /// `clearGuid()` (сохранённый и временный guid, предзагруженные страницы), потом
     /// шаги 2–3 как на первом запуске; сохранённый guid НЕ отдаётся. Звать при
