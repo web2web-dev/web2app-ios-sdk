@@ -55,6 +55,21 @@ public enum Web2App {
         #endif
     }
 
+    /// После сброса guid (`clearGuid`, `identify(force: true)`): журнал перестаёт
+    /// подписывать пачки стёртым guid; предзагруженные страницы загружены под
+    /// стёртый guid — выгружаются тем же способом, что `clearPreloadedPaywalls()`.
+    /// Стирать было нечего — ничего не делается, кроме записи журнала.
+    /// Значение guid в журнал не пишется.
+    private static func didClearGuid(hadGuid: Bool) {
+        SdkLogger.log("guid.cleared", context: ["hadGuid": hadGuid ? "true" : "false"])
+        guard hadGuid else { return }
+        SdkLogger.shared.clearGuid()
+        #if canImport(UIKit) && canImport(WebKit)
+        let run = { PaywallPreloader.shared.clear() }
+        if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+        #endif
+    }
+
     /// Слушатель событий воронки (`setFunnelEventListener`). Под замком —
     /// пишется с потока интегратора, читается с потока моста (аналог
     /// `@Volatile` в Android-SDK).
@@ -129,8 +144,15 @@ public enum Web2App {
     ///  2. `deepLinkValue` (из MMP-callback интегратора / Install Referrer) → resolve → guid. **[POC-1]**
     ///  3. Промах → email-fallback (caller показывает экран, затем `resolveEmail`). НЕ падаем молча.
     /// На успехе (любая ветка первого запуска) — шлём APP_INSTALLED-продюсер (best-effort).
+    ///
+    /// `force: true` (0.9.0) — опознать заново: сначала сброс тем же путём, что
+    /// `clearGuid()` (сохранённый и временный guid, предзагруженные страницы), потом
+    /// шаги 2–3 как на первом запуске; сохранённый guid НЕ отдаётся. Звать при
+    /// входе в другой аккаунт или регистрации нового. Без `configure` сброса нет —
+    /// отказ `notConfigured`, как раньше. `force: false` (по умолчанию) — поведение 0.8.1.
     public static func identify(
         deepLinkValue: String?,
+        force: Bool = false,
         completion: @escaping (Result<String, Web2AppError>) -> Void
     ) {
         guard let config else {
@@ -138,10 +160,16 @@ public enum Web2App {
             return completion(.failure(.notConfigured))
         }
 
-        if let existing = guidStore.load() {
+        switch guidLifecycle.beginIdentify(force: force) {
+        case .cached(let existing):
             SdkLogger.shared.setGuid(existing)
             SdkLogger.log("identify.cached_guid")
             return completion(.success(existing))
+        case .proceedAfterClear(let hadGuid):
+            SdkLogger.log("identify.forced")
+            didClearGuid(hadGuid: hadGuid)
+        case .proceed:
+            break
         }
 
         guard let token = deepLinkValue, !token.isEmpty else {
@@ -247,6 +275,19 @@ public enum Web2App {
 
     /// Текущий guid (если резолвлен). Client-held ключ — можно отдать хосту.
     public static func currentGuid() -> String? { guidStore.load() }
+
+    /// Сбросить guid (0.9.0) — при выходе из аккаунта и перед входом в другой.
+    ///
+    /// Стирает сохранённый guid (Keychain — эта запись переживает удаление
+    /// приложения), временный guid предзагрузки и предзагруженные страницы (они
+    /// загружены под прежний guid). После вызова `currentGuid()` — `nil`,
+    /// `entitlement` отвечает как у неопознанного, а следующий `identify` идёт
+    /// обычным путём (ссылка → отпечаток → email-экран). Сервер не вызывается:
+    /// покупки прежнего guid остаются за ним. Повторный вызов и вызов без guid
+    /// безопасны. Работает и без `configure`.
+    public static func clearGuid() {
+        didClearGuid(hadGuid: guidLifecycle.clearGuid())
+    }
 
     // MARK: openWebPaywall (WEB-525 R2 — обратный флоу app→web-paywall)
 
@@ -731,7 +772,8 @@ public enum Web2App {
     /// profile-id). Настоящий guid (Keychain) не трогается — как и раньше: если
     /// прежний пользователь хоть раз открывал страницу (пейвол или квиз) или
     /// `identify` успешно его опознал, его guid уже в Keychain, и этот вызов его
-    /// не сбрасывает.
+    /// не сбрасывает. Постоянный guid стирает `clearGuid()` (0.9.0) — при выходе
+    /// из аккаунта звать его: он заодно выгружает и предзагруженные страницы.
     public static func clearPreloadedPaywalls() {
         // Стираем сразу, с потока вызова (UserDefaults потокобезопасен): следующий
         // preloadPaywalls, даже позванный до выгрузки страниц на главном потоке,
@@ -857,10 +899,10 @@ public enum Web2App {
     /// эмуляторе нет). В release-сборке компилируется ВОН — в проде недоступно.
     public static func debugSetGuid(_ guid: String) { guidStore.save(guid) }
 
-    /// DEBUG-only: сброс сохранённого guid (для повторного прогона).
+    /// DEBUG-only: сброс сохранённого guid (для повторного прогона). С 0.9.0 —
+    /// тот же сброс, что `clearGuid()` (в релизе звать его).
     public static func debugClear() {
-        guidStore.clear()
-        guidLifecycle.clearProvisional()
+        clearGuid()
     }
     #endif
 }

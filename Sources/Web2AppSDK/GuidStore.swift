@@ -31,7 +31,8 @@ struct GuidStore {
         SecItemAdd(attrs as CFDictionary, nil)
     }
 
-    /// Удаляет сохранённый guid (используется DEBUG-сбросом).
+    /// Удаляет сохранённый guid (используется сбросом `Web2App.clearGuid()` —
+    /// через `GuidLifecycle.clearGuid()`; им же идёт DEBUG-сброс `debugClear()`).
     func clear() {
         SecItemDelete(baseQuery as CFDictionary)
     }

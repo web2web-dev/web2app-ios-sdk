@@ -2,7 +2,8 @@ import Foundation
 
 // Жизнь guid вокруг предзагрузки пейволов (0.8.1): временный guid неопознанного
 // пользователя, перенос в настоящий при показе, стирание при опознании и при
-// выгрузке предзагрузки, привязка временного guid к профилю подписочной платформы.
+// выгрузке предзагрузки, привязка временного guid к профилю подписочной платформы;
+// сброс обоих guid при выходе и смене аккаунта (0.9.0, `clearGuid`, `identify(force:)`).
 //
 // Файл НАМЕРЕННО только на Foundation: без Security/UIKit/WebKit и без обращений
 // к `GuidStore`, `SdkLogger`, `Web2App`. Хранилища — через протоколы, чтобы тест
@@ -294,5 +295,41 @@ struct GuidLifecycle {
     /// Стереть временный guid. Настоящий не трогается.
     func clearProvisional() {
         provisional.clear()
+    }
+
+    /// Сброс guid при выходе и смене аккаунта (0.9.0, `Web2App.clearGuid()`):
+    /// стираются настоящий guid и временный. Новый guid здесь не создаётся —
+    /// он появится при опознании или при показе страницы, как у нового
+    /// пользователя. Сервер не вызывается: связи guid на сервере остаются.
+    ///
+    /// Стирать нечего — хранилища не трогаются. Возвращает, было ли что стирать
+    /// (тогда вызывающий выгружает предзагруженные страницы: они загружены под
+    /// стёртый guid).
+    @discardableResult
+    func clearGuid() -> Bool {
+        let hadReal = real.load() != nil
+        let hadProvisional = provisional.load() != nil
+        if hadReal { real.clear() }
+        if hadProvisional { provisional.clear() }
+        return hadReal || hadProvisional
+    }
+
+    /// С чего начинается `identify`.
+    enum IdentifyStart: Equatable {
+        /// Сохранённый guid — отдать сразу (поведение без `force`).
+        case cached(String)
+        /// Сохранённого нет — обычный путь (ссылка → отпечаток → email-экран).
+        case proceed
+        /// `force: true`: сначала сброс (`clearGuid`), потом обычный путь.
+        /// `hadGuid` — было ли что стирать.
+        case proceedAfterClear(hadGuid: Bool)
+    }
+
+    /// Начало `identify`: без `force` — сохранённый guid, если есть (как в 0.8.1);
+    /// с `force` — сброс тем же путём, что `clearGuid()`, и обычный путь.
+    func beginIdentify(force: Bool) -> IdentifyStart {
+        if force { return .proceedAfterClear(hadGuid: clearGuid()) }
+        if let saved = real.load() { return .cached(saved) }
+        return .proceed
     }
 }

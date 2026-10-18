@@ -8,6 +8,7 @@ import XCTest
 private final class MemoryGuidStore: GuidStoring {
     var value: String?
     private(set) var saves = 0
+    private(set) var clears = 0
 
     init(_ value: String? = nil) { self.value = value }
 
@@ -16,18 +17,25 @@ private final class MemoryGuidStore: GuidStoring {
         saves += 1
         value = guid
     }
-    func clear() { value = nil }
+    func clear() {
+        clears += 1
+        value = nil
+    }
 }
 
 /// Временный guid в памяти вместо UserDefaults.
 private final class MemoryProvisionalStore: ProvisionalGuidStoring {
     var value: ProvisionalGuid?
+    private(set) var clears = 0
 
     init(_ value: ProvisionalGuid? = nil) { self.value = value }
 
     func load() -> ProvisionalGuid? { value }
     func save(_ record: ProvisionalGuid) { value = record }
-    func clear() { value = nil }
+    func clear() {
+        clears += 1
+        value = nil
+    }
 }
 
 private func record(
@@ -452,6 +460,121 @@ final class GuidLifecycleClearTests: XCTestCase {
         let store = ProvisionalGuidStore(defaults: defaults)
         store.save(record("P", adapty: "a1"))
         GuidLifecycle(real: MemoryGuidStore(), provisional: store, mint: { "new" }).clearProvisional()
+        XCTAssertNil(ProvisionalGuidStore(defaults: defaults).load())
+    }
+}
+
+// MARK: - Сброс guid при выходе и смене аккаунта (clearGuid, identify(force:)) — 0.9.0
+
+final class GuidLifecycleResetTests: XCTestCase {
+    /// Сброс стирает и настоящий guid (Keychain), и временный: после него
+    /// guid для страниц пуст, а `identify` пойдёт обычным путём.
+    func testClearGuidErasesRealAndProvisional() {
+        let real = MemoryGuidStore("653E")
+        let provisional = MemoryProvisionalStore(record("P", adapty: "a1"))
+        let life = GuidLifecycle(real: real, provisional: provisional, mint: { "new" })
+        XCTAssertTrue(life.clearGuid())
+        XCTAssertNil(real.value)
+        XCTAssertNil(provisional.value)
+        XCTAssertNil(life.guidForPreloadedPages())
+        XCTAssertEqual(life.beginIdentify(force: false), .proceed)
+    }
+
+    /// Только настоящий guid (пользователь опознан, временного нет) — стирается.
+    func testClearGuidErasesRealWithoutProvisional() {
+        let real = MemoryGuidStore("653E")
+        let provisional = MemoryProvisionalStore()
+        XCTAssertTrue(
+            GuidLifecycle(real: real, provisional: provisional, mint: { "new" }).clearGuid())
+        XCTAssertNil(real.value)
+    }
+
+    /// Сброс ничего не создаёт: новый guid появится только при опознании или показе.
+    func testClearGuidMintsAndSavesNothing() {
+        let real = MemoryGuidStore("653E")
+        let provisional = MemoryProvisionalStore(record("P"))
+        var minted = 0
+        GuidLifecycle(real: real, provisional: provisional, mint: { minted += 1; return "x" })
+            .clearGuid()
+        XCTAssertEqual(minted, 0)
+        XCTAssertEqual(real.saves, 0)
+        XCTAssertNil(provisional.value)
+    }
+
+    /// Сбрасывать нечего — хранилища не трогаются, ответ «стирать было нечего».
+    func testClearGuidWithoutGuidHasNoSideEffects() {
+        let real = MemoryGuidStore()
+        let provisional = MemoryProvisionalStore()
+        XCTAssertFalse(
+            GuidLifecycle(real: real, provisional: provisional, mint: { "new" }).clearGuid())
+        XCTAssertEqual(real.clears, 0)
+        XCTAssertEqual(provisional.clears, 0)
+        XCTAssertEqual(real.saves, 0)
+    }
+
+    /// Повторный сброс: первый стирает, второй — без действий и без ошибок.
+    func testRepeatedClearGuidIsNoOp() {
+        let real = MemoryGuidStore("653E")
+        let provisional = MemoryProvisionalStore(record("P"))
+        let life = GuidLifecycle(real: real, provisional: provisional, mint: { "new" })
+        XCTAssertTrue(life.clearGuid())
+        XCTAssertFalse(life.clearGuid())
+        XCTAssertEqual(real.clears, 1)
+        XCTAssertEqual(provisional.clears, 1)
+        XCTAssertNil(real.value)
+    }
+
+    /// force=false при сохранённом guid отдаёт его — как в 0.8.1, без стирания.
+    func testIdentifyWithoutForceReturnsSavedGuid() {
+        let real = MemoryGuidStore("653E")
+        let provisional = MemoryProvisionalStore()
+        let life = GuidLifecycle(real: real, provisional: provisional, mint: { "new" })
+        XCTAssertEqual(life.beginIdentify(force: false), .cached("653E"))
+        XCTAssertEqual(real.value, "653E")
+        XCTAssertEqual(real.clears, 0)
+    }
+
+    /// force=false без сохранённого guid — обычный путь, временный не трогается.
+    func testIdentifyWithoutForceAndWithoutGuidProceeds() {
+        let provisional = MemoryProvisionalStore(record("P"))
+        let life = GuidLifecycle(real: MemoryGuidStore(), provisional: provisional, mint: { "new" })
+        XCTAssertEqual(life.beginIdentify(force: false), .proceed)
+        XCTAssertEqual(provisional.value, record("P"))
+    }
+
+    /// force=true при сохранённом guid его не отдаёт: сначала тот же сброс, что
+    /// clearGuid, потом обычный путь; опознанный новый guid — единственный.
+    func testForcedIdentifyClearsSavedGuidAndProceeds() {
+        let real = MemoryGuidStore("653E")
+        let provisional = MemoryProvisionalStore(record("P", adapty: "a1"))
+        let life = GuidLifecycle(real: real, provisional: provisional, mint: { "new" })
+        XCTAssertEqual(life.beginIdentify(force: true), .proceedAfterClear(hadGuid: true))
+        XCTAssertNil(real.value)
+        XCTAssertNil(provisional.value)
+        life.identified("NEW")
+        XCTAssertEqual(real.value, "NEW")
+        XCTAssertNil(provisional.value)
+    }
+
+    /// force=true без сохранённого guid — обычный путь, хранилища не трогаются.
+    func testForcedIdentifyWithoutGuidProceedsWithoutSideEffects() {
+        let real = MemoryGuidStore()
+        let provisional = MemoryProvisionalStore()
+        let life = GuidLifecycle(real: real, provisional: provisional, mint: { "new" })
+        XCTAssertEqual(life.beginIdentify(force: true), .proceedAfterClear(hadGuid: false))
+        XCTAssertEqual(real.clears, 0)
+        XCTAssertEqual(provisional.clears, 0)
+    }
+
+    /// Сброс стирает временный guid в настоящем хранилище UserDefaults.
+    func testClearGuidEmptiesUserDefaultsStore() {
+        let suite = "web2app.tests.reset.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ProvisionalGuidStore(defaults: defaults)
+        store.save(record("P", adapty: "a1"))
+        GuidLifecycle(real: MemoryGuidStore("653E"), provisional: store, mint: { "new" })
+            .clearGuid()
         XCTAssertNil(ProvisionalGuidStore(defaults: defaults).load())
     }
 }

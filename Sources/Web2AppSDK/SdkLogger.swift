@@ -21,7 +21,7 @@ final class SdkLogger {
     static let shared = SdkLogger()
 
     /// Версия SDK — уезжает в каждую пачку журнала.
-    static let sdkVersion = "0.8.1"
+    static let sdkVersion = "0.9.0"
 
     /// Серийная очередь — единственный владелец мутируемого состояния ниже.
     private let queue = DispatchQueue(label: "com.web2app.sdk-logger")
@@ -52,6 +52,16 @@ final class SdkLogger {
     /// guid резолвлен/зачеканен — включается во все последующие пачки.
     func setGuid(_ guid: String) {
         queue.async { self.guid = guid }
+    }
+
+    /// guid сброшен (`Web2App.clearGuid`, 0.9.0): накопленные до сброса записи
+    /// уезжают сразу, под прежним guid (пачка до 50 записей; остаток, если он
+    /// больше, и всё после сброса — без guid, пока его не опознают заново).
+    func clearGuid() {
+        queue.async {
+            self.flushLocked()
+            self.guid = nil
+        }
     }
 
     static func log(
