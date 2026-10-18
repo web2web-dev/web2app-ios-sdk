@@ -86,6 +86,9 @@ final class SdkLogger {
     private func append(
         event: String, message: String, context: [String: String], level: String
     ) {
+        #if DEBUG
+        Self.notifyObserver(event: event, message: message, context: context)
+        #endif
         // Локальная видимость в Xcode-консоли интегратора — тем же ходом.
         print("[Web2App] \(level.uppercased()) \(event)"
             + (message.isEmpty ? "" : " — \(message)")
@@ -141,6 +144,43 @@ final class SdkLogger {
 
         scheduleFlushLocked() // остались записи → следующая пачка
     }
+
+    #if DEBUG
+    // MARK: точки для тестов (только DEBUG, внутри модуля — `@testable`)
+
+    private static let observerLock = NSLock()
+    private static var observer: ((String, String, [String: String]) -> Void)?
+
+    /// Тест подписывается на каждую запись журнала (событие, сообщение, контекст)
+    /// синхронно, с потока записи; nil — отписаться.
+    static func debugSetObserver(_ observer: ((String, String, [String: String]) -> Void)?) {
+        observerLock.lock()
+        self.observer = observer
+        observerLock.unlock()
+    }
+
+    private static func notifyObserver(event: String, message: String, context: [String: String]) {
+        observerLock.lock()
+        let current = observer
+        observerLock.unlock()
+        current?(event, message, context)
+    }
+
+    /// guid, которым журнал подписывает пачки, — после всех поставленных в очередь шагов.
+    func debugCurrentGuid() -> String? {
+        queue.sync { guid }
+    }
+
+    /// Вернуть журнал к состоянию до `configure`: тесты с конфигурацией не
+    /// оставляют её соседним тестам.
+    func debugReset() {
+        queue.sync {
+            config = nil
+            guid = nil
+            buffer.removeAll()
+        }
+    }
+    #endif
 
     /// Модель/ОС/версия приложения — контекст каждой пачки.
     private static let deviceInfo: [String: String] = {

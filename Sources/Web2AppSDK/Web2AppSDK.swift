@@ -916,6 +916,14 @@ public enum Web2App {
     public static func debugClear() {
         clearGuid()
     }
+
+    /// DEBUG-only, внутри модуля (для тестов через `@testable`): забыть `configure`
+    /// и вернуть журнал к состоянию до него — тест с конфигурацией не оставляет
+    /// её соседним тестам. Сохранённый guid не трогает.
+    static func debugResetConfiguration() {
+        config = nil
+        SdkLogger.shared.debugReset()
+    }
     #endif
 }
 
